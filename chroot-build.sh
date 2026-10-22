@@ -38,7 +38,7 @@ if [ -d "/tmp/lingmo-settings" ]; then
     rm -rf /tmp/lingmo-settings
 fi
 
-echo "=== [4/4] Configurando Tap-to-Click (tocar para hacer clic) por defecto en Trackpads de Laptops ==="
+echo "=== [4/4] Configurando Touchpad (Tap-to-Click y Natural Scrolling) y Dock/KWin por defecto ==="
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'TOUCHPAD_EOF' > /etc/X11/xorg.conf.d/40-libinput.conf
 Section "InputClass"
@@ -48,30 +48,57 @@ Section "InputClass"
         Driver "libinput"
         Option "Tapping" "on"
         Option "TappingButtonMap" "lrm"
-        Option "NaturalScrolling" "false"
+        Option "NaturalScrolling" "true"
         Option "ClickMethod" "buttonareas"
 EndSection
 TOUCHPAD_EOF
 
-mkdir -p /etc/skel/.config/lingmoos
+mkdir -p /etc/skel/.config/lingmoos /etc/skel/.config/cutefishos
 cat << 'TOUCHPAD_CONF' > /etc/skel/.config/lingmoos/touchpad.conf
 [General]
 tapToClick=true
-naturalScroll=false
+naturalScroll=true
 TOUCHPAD_CONF
+cp -f /etc/skel/.config/lingmoos/touchpad.conf /etc/skel/.config/cutefishos/touchpad.conf 2>/dev/null || true
+
+# Configurar Dock por defecto en Smart Hide (Visibility=2)
+cat << 'DOCK_CONF' > /etc/skel/.config/lingmoos/dock.conf
+[General]
+Visibility=2
+DOCK_CONF
+cp -f /etc/skel/.config/lingmoos/dock.conf /etc/skel/.config/cutefishos/dock.conf 2>/dev/null || true
+
+# Configurar KWin por defecto con animacion Magic Lamp
+mkdir -p /etc/xdg
+cat << 'KWIN_PLUGINS' >> /etc/xdg/kwinrc
+[Plugins]
+magiclampEnabled=true
+lingmo_squashEnabled=false
+KWIN_PLUGINS
 
 mkdir -p /etc/skel/.config
+cat << 'KWIN_USER' >> /etc/skel/.config/kwinrc
+[Plugins]
+magiclampEnabled=true
+lingmo_squashEnabled=false
+KWIN_USER
+
 cat << 'KCM_CONF' > /etc/skel/.config/kcminputrc
 [Touchpad]
 tapToClick=true
+naturalScroll=true
 KCM_CONF
 
 for u_home in /home/* /root; do
     if [ -d "$u_home" ]; then
-        mkdir -p "$u_home/.config/lingmoos"
+        mkdir -p "$u_home/.config/lingmoos" "$u_home/.config/cutefishos"
         cp -f /etc/skel/.config/lingmoos/touchpad.conf "$u_home/.config/lingmoos/touchpad.conf" 2>/dev/null || true
+        cp -f /etc/skel/.config/cutefishos/touchpad.conf "$u_home/.config/cutefishos/touchpad.conf" 2>/dev/null || true
+        cp -f /etc/skel/.config/lingmoos/dock.conf "$u_home/.config/lingmoos/dock.conf" 2>/dev/null || true
+        cp -f /etc/skel/.config/cutefishos/dock.conf "$u_home/.config/cutefishos/dock.conf" 2>/dev/null || true
         mkdir -p "$u_home/.config"
         cp -f /etc/skel/.config/kcminputrc "$u_home/.config/kcminputrc" 2>/dev/null || true
+        cp -f /etc/skel/.config/kwinrc "$u_home/.config/kwinrc" 2>/dev/null || true
     fi
 done
 
@@ -82,6 +109,10 @@ if which xinput >/dev/null 2>&1; then
         prop=$(xinput list-props "$id" 2>/dev/null | grep -i "Tapping Enabled (" | head -n1 | grep -o -E '[0-9]+' | head -n1)
         if [ -n "$prop" ]; then
             xinput set-prop "$id" "$prop" 1 2>/dev/null || true
+        fi
+        prop_nat=$(xinput list-props "$id" 2>/dev/null | grep -i "Natural Scrolling Enabled (" | head -n1 | grep -o -E '[0-9]+' | head -n1)
+        if [ -n "$prop_nat" ]; then
+            xinput set-prop "$id" "$prop_nat" 1 2>/dev/null || true
         fi
     done
 fi
@@ -94,6 +125,9 @@ cat << 'SUPERKEY_C' > /tmp/superkey-launcher.c
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/time.h>
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/record.h>
@@ -102,6 +136,7 @@ static int super_pressed = 0;
 static int other_key_pressed = 0;
 static KeyCode code_super_l = 133;
 static KeyCode code_super_r = 134;
+static struct timeval last_trigger = {0, 0};
 
 void callback(XPointer closure, XRecordInterceptData *data) {
     if (data->category == XRecordFromServer) {
@@ -116,12 +151,19 @@ void callback(XPointer closure, XRecordInterceptData *data) {
                 other_key_pressed = 0;
             } else if (type == KeyRelease) {
                 if (super_pressed && !other_key_pressed) {
-                    // Pulsación solitaria de tecla Windows -> Abrir/Conmutar el lanzador
-                    pid_t pid = fork();
-                    if (pid == 0) {
-                        setsid();
-                        system("sh -c 'if which lingmo-launcher >/dev/null 2>&1; then lingmo-launcher; elif which cutefish-launcher >/dev/null 2>&1; then cutefish-launcher; else dbus-send --session --dest=com.lingmo.Launcher --type=method_call /Launcher com.lingmo.Launcher.toggle 2>/dev/null || dbus-send --session --dest=org.cutefish.Launcher --type=method_call /Launcher org.cutefish.Launcher.toggle 2>/dev/null; fi' >/dev/null 2>&1 &");
-                        exit(0);
+                    struct timeval now;
+                    gettimeofday(&now, NULL);
+                    long elapsed_ms = (now.tv_sec - last_trigger.tv_sec) * 1000 + (now.tv_usec - last_trigger.tv_usec) / 1000;
+                    
+                    // Debounce de 380ms para evitar dobles conmutaciones o trabas
+                    if (elapsed_ms > 380) {
+                        last_trigger = now;
+                        pid_t pid = fork();
+                        if (pid == 0) {
+                            setsid();
+                            system("sh -c 'which lingmo-launcher >/dev/null 2>&1 && lingmo-launcher || which cutefish-launcher >/dev/null 2>&1 && cutefish-launcher' >/dev/null 2>&1 &");
+                            exit(0);
+                        }
                     }
                 }
                 super_pressed = 0;
@@ -137,6 +179,12 @@ void callback(XPointer closure, XRecordInterceptData *data) {
 }
 
 int main() {
+    // Garantizar instancia única con bloqueo de archivo
+    int lock_fd = open("/tmp/superkey-launcher.lock", O_CREAT | O_RDWR, 0666);
+    if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        return 0; // Ya existe una instancia activa
+    }
+
     signal(SIGCHLD, SIG_IGN);
 
     Display *ctrl_dpy = NULL;
@@ -179,6 +227,7 @@ gcc -O2 /tmp/superkey-launcher.c -lX11 -lXtst -o /usr/bin/superkey-launcher || t
 chmod 755 /usr/bin/superkey-launcher || true
 rm -f /tmp/superkey-launcher.c
 
+# Único inicio automático por Desktop Entry oficial (evita doble ejecución en Xsession)
 mkdir -p /etc/xdg/autostart
 cat << 'SUPERKEY_AUTOSTART' > /etc/xdg/autostart/superkey-launcher.desktop
 [Desktop Entry]
@@ -190,19 +239,12 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 SUPERKEY_AUTOSTART
 chmod 644 /etc/xdg/autostart/superkey-launcher.desktop
-
-mkdir -p /etc/X11/Xsession.d
-cat << 'XSESSION_SUPER' > /etc/X11/Xsession.d/92superkey-launcher
-if [ -x /usr/bin/superkey-launcher ]; then
-    /usr/bin/superkey-launcher &
-fi
-XSESSION_SUPER
-chmod +x /etc/X11/Xsession.d/92superkey-launcher
+rm -f /etc/X11/Xsession.d/92superkey-launcher || true
 
 echo "=== [6/6] Reparando Deteccion de Discos NVMe / SATA / RST en Calamares Installer ==="
 # 1. Instalar utilidades esenciales de almacenamiento y detección de particiones
 apt-get install -y --no-install-recommends \
-  nvme-cli mdadm libblockdev-nvme2 smartmontools parted gparted kpmcore ntfs-3g dosfstools btrfs-progs e2fsprogs fdisk || true
+  nvme-cli mdadm libblockdev-nvme2 smartmontools parted gparted kpmcore ntfs-3g dosfstools btrfs-progs e2fsprogs fdisk dpkg-dev || true
 
 # 2. Renombrar calamares a calamares.bin y crear wrapper con permisos root e inicialización de discos
 for cp_path in /usr/bin/calamares /usr/sbin/calamares /usr/local/bin/calamares; do
@@ -289,13 +331,63 @@ sd_mod
 INITRAMFS_MODULES
 update-initramfs -u || true
 
-# 6. Desactivar bloqueo preventivo en welcome.conf de Calamares y habilitar particionado manual
-find /etc/calamares /usr/share/calamares -name "welcome.conf" -exec sed -i '/- storage/d' {} + 2>/dev/null || true
-find /etc/calamares /usr/share/calamares -name "welcome.conf" -exec sed -i '/- partitions/d' {} + 2>/dev/null || true
-find /etc/calamares /usr/share/calamares -name "welcome.conf" -exec sed -i 's/requiredStorage:.*/requiredStorage: 1.0/g' {} + 2>/dev/null || true
-find /etc/calamares /usr/share/calamares -name "partition.conf" -exec sed -i 's/allowManualPartitioning:.*/allowManualPartitioning: true/g' {} + 2>/dev/null || true
+# 6. Desactivar COMPLETAMENTE cualquier bloqueo de requerimientos en Calamares
+python3 -c "
+import os, re
 
-# 6. Configurar valores por defecto de la barra superior (Auto: sincronizada con modo oscuro)
+for root, dirs, files in os.walk('/'):
+    if any(p in root for p in ['/proc', '/sys', '/dev']): continue
+    for f in files:
+        if f.endswith(('.conf', '.yaml')) and any(w in f.lower() for w in ['welcome', 'calamares', 'partition']):
+            filepath = os.path.join(root, f)
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as fp:
+                    content = fp.read()
+                orig = content
+                # Anular requerimientos obligatorios
+                content = re.sub(r'required\s*:\s*\[[^\]]*\]', 'required: []', content)
+                content = re.sub(r'required\s*:\s*\n(\s*-[^\n]*\n)+', 'required: []\n', content)
+                # Comentar verificaciones de storage y partitions para eliminar la X roja
+                content = re.sub(r'(\s*-\s*storage[^\n]*)', r'# \1', content)
+                content = re.sub(r'(\s*-\s*partitions[^\n]*)', r'# \1', content)
+                content = re.sub(r'requiredStorage\s*:[^\n]*', 'requiredStorage: 0', content)
+                content = re.sub(r'requiredRam\s*:[^\n]*', 'requiredRam: 0', content)
+                if 'allowManualPartitioning' in content:
+                    content = re.sub(r'allowManualPartitioning\s*:[^\n]*', 'allowManualPartitioning: true', content)
+                if content != orig:
+                    with open(filepath, 'w', encoding='utf-8') as fp:
+                        fp.write(content)
+                    print('Calamares config parchado:', filepath)
+            except Exception:
+                pass
+" || true
+
+# Sobrescribir directamente welcome.conf en todas las ubicaciones conocidas para asegurar botón Siguiente habilitado
+for w_dir in /etc/calamares/modules /usr/share/calamares/modules /etc/calamares; do
+    if [ -d "$w_dir" ]; then
+        cat << 'WELCOME_SAFE' > "$w_dir/welcome.conf"
+---
+showSupportUrl: false
+showKnownIssuesUrl: false
+showReleaseNotesUrl: false
+
+requirements:
+    requiredStorage: 0
+    requiredRam: 0
+    check: []
+    required: []
+WELCOME_SAFE
+    fi
+done
+
+# Habilitar particionado manual en partition.conf
+for p_dir in /etc/calamares/modules /usr/share/calamares/modules /etc/calamares; do
+    if [ -f "$p_dir/partition.conf" ]; then
+        sed -i 's/allowManualPartitioning:.*/allowManualPartitioning: true/g' "$p_dir/partition.conf" || true
+    fi
+done
+
+# 7. Configurar valores por defecto de la barra superior (Auto: sincronizada con modo oscuro)
 mkdir -p /etc/skel/.config/lingmoos
 cat << 'STATUSBAR_DEFAULT' > /etc/skel/.config/lingmoos/statusbar.conf
 [General]
@@ -309,36 +401,43 @@ for u_home in /home/* /root; do
     fi
 done
 
-# 7. Configurar comando helper para instalar Spotify oficial (.deb compatible con GLIBC 2.36)
+# 8. Pre-integrar repositorio local y APT Pinning para que 'apt-get install spotify-client' funcione directamente con los comandos oficiales
+mkdir -p /var/lib/lingmo-repo
+cd /var/lib/lingmo-repo
+SPOTIFY_PKG="spotify-client_1.2.74.477.g00424584_amd64.deb"
+wget -q -O "$SPOTIFY_PKG" "https://archive.org/download/spotify-client-1.2.74.477/$SPOTIFY_PKG" || \
+wget -q -O "$SPOTIFY_PKG" "https://raw.githubusercontent.com/hetzelltellez/lingmo-os-cutefish/master/$SPOTIFY_PKG" || true
+
+if [ -f "$SPOTIFY_PKG" ] && [ -s "$SPOTIFY_PKG" ]; then
+    dpkg-scanpackages . /dev/null 2>/dev/null | gzip -9c > Packages.gz || true
+    
+    # Agregar repo local a sources.list.d
+    echo "deb [trusted=yes] file:/var/lib/lingmo-repo ./" > /etc/apt/sources.list.d/lingmo-local.list
+    
+    # Fijar prioridad 1001 para que 'apt install spotify-client' use siempre esta version compatible y no falle por GLIBC
+    mkdir -p /etc/apt/preferences.d
+    cat << 'SPOTIFY_PIN' > /etc/apt/preferences.d/spotify
+Package: spotify-client
+Pin: version 1:1.2.74*
+Pin-Priority: 1001
+SPOTIFY_PIN
+fi
+cd /
+
+# 9. Mantener también script helper /usr/local/bin/instalar-spotify
 cat << 'SPOTIFY_SH' > /usr/local/bin/instalar-spotify
 #!/bin/bash
 set -e
 echo "=========================================================="
 echo "    Instalador Oficial de Spotify (.deb para Debian 12)   "
 echo "=========================================================="
-echo "Descargando paquete oficial de Spotify compatible con GLIBC 2.36..."
-
-TMP_DIR=$(mktemp -d)
-cd "$TMP_DIR"
-
-SPOTIFY_DEB="spotify-client_1.2.74.477.g00424584_amd64.deb"
-wget -O "$SPOTIFY_DEB" "https://archive.org/download/spotify-client-1.2.74.477/$SPOTIFY_DEB" || \
-wget -O "$SPOTIFY_DEB" "https://raw.githubusercontent.com/hetzelltellez/lingmo-os-cutefish/master/$SPOTIFY_DEB" || true
-
-if [ -f "$SPOTIFY_DEB" ] && [ -s "$SPOTIFY_DEB" ]; then
-    echo "Instalando Spotify..."
-    apt-get update || true
-    apt-get install -y "./$SPOTIFY_DEB" || dpkg -i "./$SPOTIFY_DEB" || apt-get install -f -y
-    apt-mark hold spotify-client
-    echo ""
-    echo "=========================================================="
-    echo "   Spotify ha sido instalado exitosamente en tu sistema!  "
-    echo "=========================================================="
+if [ -f "/var/lib/lingmo-repo/spotify-client_1.2.74.477.g00424584_amd64.deb" ]; then
+    apt-get install -y /var/lib/lingmo-repo/spotify-client_1.2.74.477.g00424584_amd64.deb || true
 else
-    echo "Error: No se pudo descargar el paquete .deb. Verifica tu conexion a internet."
+    apt-get update && apt-get install -y spotify-client || true
 fi
-
-rm -rf "$TMP_DIR"
+apt-mark hold spotify-client 2>/dev/null || true
+echo "Listo! Spotify instalado."
 SPOTIFY_SH
 chmod +x /usr/local/bin/instalar-spotify
 

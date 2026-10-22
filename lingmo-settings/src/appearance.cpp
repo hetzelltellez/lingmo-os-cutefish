@@ -41,13 +41,13 @@ Appearance::Appearance(QObject *parent)
                                    QSettings::IniFormat))
     , m_dockIconSize(0)
     , m_dockDirection(0)
-    , m_dockVisibility(0)
+    , m_dockVisibility(2)
     , m_fontPointSize(11)
     , m_systemEffects(false)
 {
     m_dockIconSize = m_dockSettings->value("IconSize").toInt();
     m_dockDirection = m_dockSettings->value("Direction").toInt();
-    m_dockVisibility = m_dockSettings->value("Visibility").toInt();
+    m_dockVisibility = m_dockSettings->value("Visibility", 2).toInt();
     m_dockRoundedWindow = m_dockSettings->value("RoundedWindow").toBool();
     m_dockStyle = m_dockSettings->value("Style").toInt();
 
@@ -55,7 +55,7 @@ Appearance::Appearance(QObject *parent)
     m_systemEffects = !m_kwinSettings->value("OpenGLIsUnsafe", false).toBool();
     m_kwinSettings->endGroup();
     m_kwinSettings->beginGroup("Plugins");
-    m_minimiumAnimation = m_kwinSettings->value("magiclampEnabled").toBool() ? 1 : 0;
+    m_minimiumAnimation = m_kwinSettings->value("magiclampEnabled", true).toBool() ? 1 : 0;
     m_kwinSettings->endGroup();
 
     // Init
