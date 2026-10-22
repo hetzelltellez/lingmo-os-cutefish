@@ -36,6 +36,8 @@ DockItem {
     onRightClicked: {
         if (model.appId === "lingmo-launcher" || model.appId === "cutefish-launcher") {
             launcherMenu.popup()
+        } else if (model.fixed) {
+            // No context menu for fixed items like Task View
         } else {
             contextMenu.show()
         }

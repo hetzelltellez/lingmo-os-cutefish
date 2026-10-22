@@ -152,6 +152,11 @@ bool ApplicationModel::isDesktopPinned(const QString &desktopFile)
 
 void ApplicationModel::clicked(const QString &id)
 {
+    if (id == "lingmo-overview") {
+        QProcess::startDetached("sh", QStringList() << "-c" << "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut Overview || qdbus org.kde.kglobalaccel /component/kwin invokeShortcut Expose || qdbus org.kde.KWin /KWin toggleOverview");
+        return;
+    }
+
     ApplicationItem *item = findItemById(id);
 
     if (!item)
@@ -361,6 +366,15 @@ void ApplicationModel::initPinnedApplications()
     item->fixed = true;
     m_appItems.append(item);
 
+    // 2. Task View / Overview
+    ApplicationItem *overviewItem = new ApplicationItem;
+    overviewItem->id = "lingmo-overview";
+    overviewItem->exec = "sh -c 'qdbus org.kde.kglobalaccel /component/kwin invokeShortcut Overview || qdbus org.kde.kglobalaccel /component/kwin invokeShortcut Expose || qdbus org.kde.KWin /KWin toggleOverview'";
+    overviewItem->iconName = "qrc:/images/overview.svg";
+    overviewItem->visibleName = tr("Task View");
+    overviewItem->fixed = true;
+    m_appItems.append(overviewItem);
+
     // Pinned Apps
     for (int i = 0; i < groups.size(); ++i) {
         for (const QString &id : groups) {
@@ -421,6 +435,8 @@ void ApplicationModel::savePinAndUnPinList()
     int index = 0;
 
     for (ApplicationItem *item : m_appItems) {
+        if (item->fixed)
+            continue;
         if (item->isPinned) {
             settings.beginGroup(item->id);
             settings.setValue("Index", index);
@@ -454,7 +470,7 @@ void ApplicationModel::onWindowAdded(quint64 wid)
     const QString id = info.value("id").toString();
 
     // Skip...
-    if (id == "lingmo-launcher")
+    if (id == "lingmo-launcher" || id == "lingmo-overview" || id == "cutefish-launcher")
         return;
 
     QString desktopPath = m_iface->desktopFilePath(wid);
