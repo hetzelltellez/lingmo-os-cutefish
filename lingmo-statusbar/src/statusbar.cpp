@@ -43,6 +43,10 @@ StatusBar::StatusBar(QQuickView *parent)
     QSettings settings("lingmoos", "locale");
     m_twentyFourTime = settings.value("twentyFour", false).toBool();
 
+    QSurfaceFormat fmt = format();
+    fmt.setAlphaBufferSize(8);
+    setFormat(fmt);
+
     setFlags(Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
     setColor(Qt::transparent);
 

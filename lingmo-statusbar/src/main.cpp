@@ -18,6 +18,7 @@
  */
 
 #include <QApplication>
+#include <QQuickWindow>
 #include <QTranslator>
 #include <QLocale>
 
@@ -38,6 +39,7 @@
 int main(int argc, char *argv[])
 {
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QQuickWindow::setDefaultAlphaBuffer(true);
     QApplication app(argc, argv);
 
     const char *uri = "Lingmo.StatusBar";

@@ -74,8 +74,11 @@ Item {
     Rectangle {
         id: background
         anchors.fill: parent
-        color: "#FFFFFF"
-        opacity: 0.84
+
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(1.0, 1.0, 1.0, 0.82) }
+            GradientStop { position: 1.0; color: Qt.rgba(0.96, 0.97, 0.98, 0.78) }
+        }
 
         // Subtle bottom border
         Rectangle {
@@ -83,11 +86,19 @@ Item {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             height: 1
-            color: "#E2E8F0"
+            color: "#CBD5E1"
+            opacity: 0.7
         }
     }
     LingmoUI.WindowHelper {
         id: windowHelper
+    }
+
+    LingmoUI.WindowBlur {
+        view: StatusBar
+        geometry: Qt.rect(rootItem.x, rootItem.y, rootItem.width, rootItem.height)
+        windowRadius: 0
+        enabled: true
     }
 
     LingmoUI.PopupTips {
@@ -109,30 +120,6 @@ Item {
         anchors.leftMargin: LingmoUI.Units.smallSpacing
         anchors.rightMargin: LingmoUI.Units.smallSpacing
         spacing: LingmoUI.Units.smallSpacing / 2
-
-        // System Logo
-        StandardItem {
-            id: systemLogoItem
-            animationEnabled: true
-            Layout.fillHeight: true
-            Layout.preferredWidth: systemLogo.width + LingmoUI.Units.largeSpacing
-            onClicked: {
-                if (mouse.button === Qt.LeftButton)
-                    acticity.showSystemMenu()
-            }
-
-            Image {
-                id: systemLogo
-                anchors.centerIn: parent
-                width: rootItem.iconSize
-                height: rootItem.iconSize
-                sourceSize: Qt.size(rootItem.iconSize, rootItem.iconSize)
-                source: "image://icontheme/systemlogo"
-                visible: true
-                antialiasing: true
-                smooth: false
-            }
-        }
 
         // App name and icon
         StandardItem {

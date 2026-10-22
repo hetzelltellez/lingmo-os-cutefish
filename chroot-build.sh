@@ -74,5 +74,72 @@ fi
 XSESSION_TAP
 chmod +x /etc/X11/Xsession.d/90touchpad-tap
 
+echo "=== [5/5] Configurando tecla Windows (Super / Meta) para abrir el Lanzador de Aplicaciones ==="
+apt-get install -y --no-install-recommends xcape || true
+
+# 1. Configurar KWin ModifierOnlyShortcuts (nativo de KDE/KWin)
+mkdir -p /etc/xdg
+cat << 'KWINRC_EOF' >> /etc/xdg/kwinrc
+
+[ModifierOnlyShortcuts]
+Meta=com.lingmo.Launcher,/Launcher,com.lingmo.Launcher,toggle
+KWINRC_EOF
+
+# 2. Configurar kwinrc en /etc/skel/.config
+mkdir -p /etc/skel/.config
+cat << 'KWINRC_USER_EOF' > /etc/skel/.config/kwinrc
+[ModifierOnlyShortcuts]
+Meta=com.lingmo.Launcher,/Launcher,com.lingmo.Launcher,toggle
+KWINRC_USER_EOF
+
+# 3. Configurar lingmoglobalshortcutsrc en /etc/skel/.config (leído por lingmo-core chotkeys)
+cat << 'LINGMO_SHORTCUTS_EOF' > /etc/skel/.config/lingmoglobalshortcutsrc
+[Meta]
+Comment=Launcher
+Exec=lingmo-launcher
+
+[Alt+F1]
+Comment=Launcher
+Exec=lingmo-launcher
+LINGMO_SHORTCUTS_EOF
+
+# 4. Configurar kglobalshortcutsrc en /etc/skel/.config
+cat << 'KGLOBAL_EOF' > /etc/skel/.config/kglobalshortcutsrc
+[lingmo-launcher.desktop]
+_k_friendly_name=Lingmo Launcher
+_launch=Alt+F1\tMeta,none,Lingmo Launcher
+KGLOBAL_EOF
+
+# 5. Autostart para lingmo-launcher para respuesta inmediata en segundo plano
+mkdir -p /etc/xdg/autostart
+cat << 'LAUNCHER_AUTOSTART_EOF' > /etc/xdg/autostart/lingmo-launcher.desktop
+[Desktop Entry]
+Type=Application
+Name=Lingmo Launcher
+Exec=lingmo-launcher
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+LAUNCHER_AUTOSTART_EOF
+
+# 6. Fallback con xcape en sesión X11
+mkdir -p /etc/X11/Xsession.d
+cat << 'XSESSION_SUPER' > /etc/X11/Xsession.d/91super-launcher
+if which xcape >/dev/null 2>&1; then
+    xcape -e 'Super_L=Alt_L|F1' &
+fi
+XSESSION_SUPER
+chmod +x /etc/X11/Xsession.d/91super-launcher
+
+# Copiar configuraciones a todas las carpetas de usuario (/home/* y /root)
+for u_home in /home/* /root; do
+    if [ -d "$u_home" ]; then
+        mkdir -p "$u_home/.config"
+        cp -f /etc/skel/.config/kwinrc "$u_home/.config/kwinrc" 2>/dev/null || true
+        cp -f /etc/skel/.config/lingmoglobalshortcutsrc "$u_home/.config/lingmoglobalshortcutsrc" 2>/dev/null || true
+        cp -f /etc/skel/.config/kglobalshortcutsrc "$u_home/.config/kglobalshortcutsrc" 2>/dev/null || true
+    fi
+done
+
 rm -rf /tmp/lingmo-statusbar
 apt-get clean
