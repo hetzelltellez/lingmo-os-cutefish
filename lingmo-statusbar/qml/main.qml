@@ -322,7 +322,7 @@ Item {
         StandardItem {
             id: controler
 
-            checked: controlCenter.item.visible
+            checked: controlCenter.item ? controlCenter.item.visible : false
             animationEnabled: true
             Layout.fillHeight: true
             Layout.preferredWidth: _controlerLayout.implicitWidth + LingmoUI.Units.largeSpacing
@@ -332,13 +332,14 @@ Item {
             }
 
             function toggleDialog() {
-                if (controlCenter.item.visible)
-                    controlCenter.item.close()
-                else {
-                    // 先初始化，用户可能会通过Alt鼠标左键移动位置
-                    controlCenter.item.position = Qt.point(0, 0)
-                    controlCenter.item.position = mapToGlobal(0, 0)
-                    controlCenter.item.open()
+                if (controlCenter.item) {
+                    if (controlCenter.item.visible)
+                        controlCenter.item.close()
+                    else {
+                        controlCenter.item.position = Qt.point(0, 0)
+                        controlCenter.item.position = mapToGlobal(0, 0)
+                        controlCenter.item.open()
+                    }
                 }
             }
 
@@ -352,8 +353,8 @@ Item {
 
                 Image {
                     id: volumeIcon
-                    visible: controlCenter.item.defaultSink
-                    source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + controlCenter.item.volumeIconName + ".svg"
+                    visible: true
+                    source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + ((controlCenter.item && controlCenter.item.volumeIconName) ? controlCenter.item.volumeIconName : "audio-volume-high-symbolic") + ".svg"
                     width: rootItem.iconSize
                     height: width
                     sourceSize: Qt.size(width, height)
@@ -368,13 +369,23 @@ Item {
                     width: rootItem.iconSize
                     height: width
                     sourceSize: Qt.size(width, height)
-                    source: activeConnection.wirelessIcon ? "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + activeConnection.wirelessIcon + ".svg" : ""
+                    source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + (activeConnection.wirelessIcon ? activeConnection.wirelessIcon : "network-wireless-connected-100") + ".svg"
                     asynchronous: true
                     Layout.alignment: Qt.AlignCenter
-                    visible: enabledConnections.wirelessHwEnabled &&
-                             enabledConnections.wirelessEnabled &&
-                             activeConnection.wirelessName &&
-                             wirelessIcon.status === Image.Ready
+                    visible: true
+                    antialiasing: true
+                    smooth: false
+                }
+
+                Image {
+                    id: controlCenterIcon
+                    width: rootItem.iconSize
+                    height: width
+                    sourceSize: Qt.size(width, height)
+                    source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + "control.svg"
+                    asynchronous: true
+                    Layout.alignment: Qt.AlignCenter
+                    visible: true
                     antialiasing: true
                     smooth: false
                 }
@@ -404,33 +415,34 @@ Item {
             }
         }
 
-        // StandardItem {
-        //     id: shutdownItem
+        StandardItem {
+            id: shutdownItem
 
-        //     animationEnabled: true
-        //     Layout.fillHeight: true
-        //     Layout.preferredWidth: shutdownIcon.implicitWidth + LingmoUI.Units.smallSpacing
-        //     checked: shutdownDialog.item.visible
+            animationEnabled: true
+            Layout.fillHeight: true
+            Layout.preferredWidth: shutdownIcon.implicitWidth + LingmoUI.Units.largeSpacing
+            checked: shutdownDialog.item ? shutdownDialog.item.visible : false
 
-        //     onClicked: {
-        //         shutdownDialog.item.position = Qt.point(0, 0)
-        //         shutdownDialog.item.position = mapToGlobal(0, 0)
-        //         shutdownDialog.item.open()
-        //     }
+            onClicked: {
+                if (shutdownDialog.item) {
+                    shutdownDialog.item.position = Qt.point(0, 0)
+                    shutdownDialog.item.position = mapToGlobal(0, 0)
+                    shutdownDialog.item.open()
+                }
+            }
 
-        //     Image {
-        //         id: shutdownIcon
-        //         anchors.centerIn: parent
-        //         width: rootItem.iconSize
-        //         height: width
-        //         sourceSize: Qt.size(width, height)
-        //         source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + "system-shutdown-symbolic.svg"
-        //         asynchronous: true
-        //         antialiasing: true
-        //         smooth: false
-        //     }
-        // }
-
+            Image {
+                id: shutdownIcon
+                anchors.centerIn: parent
+                width: rootItem.iconSize
+                height: width
+                sourceSize: Qt.size(width, height)
+                source: "qrc:/images/" + (rootItem.darkMode ? "dark/" : "light/") + "system-shutdown-symbolic.svg"
+                asynchronous: true
+                antialiasing: true
+                smooth: false
+            }
+        }
         // Pop-up notification center and calendar
         StandardItem {
             id: datetimeItem
@@ -533,11 +545,11 @@ Item {
         asynchronous: true
     }
 
-    // Loader {
-    //     id: shutdownDialog
-    //     sourceComponent: ShutdownDialog {}
-    //     asynchronous: true
-    // }
+    Loader {
+        id: shutdownDialog
+        sourceComponent: ShutdownDialog {}
+        asynchronous: true
+    }
 
     NM.ActiveConnection {
         id: activeConnection
