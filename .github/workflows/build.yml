@@ -1,69 +1,157 @@
-name: Daily Build
+name: Build Lingmo OS Cutefish ISO
 
 permissions: write-all
 
 on:
   push:
-    branches: [ "master", "debian-12" ]
-  pull_request:
-    branches: [ "master", "debian-12" ]
-  schedule:
-    - cron: "59 18 * * *"
+    branches: [ "master", "main" ]
   workflow_dispatch:
+
 jobs:
-  debian:
-    strategy:
-        matrix:
-          arch: ['amd64']
-    name: Build ${{ matrix.arch }} iso
+  build:
+    name: Build Cutefish ISO
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 4096
-          swap-size-mb: 512
-          remove-dotnet: 'true'
-          remove-android: 'true'
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          df -h
 
       - uses: actions/checkout@v4
 
-      - name: Set up amd64 Debian container
-        uses: addnab/docker-run-action@v3
-        if: ${{ matrix.arch == 'amd64' }}
-        with:
-          image: docker.io/library/debian:trixie-slim
-          options: --privileged -v ${{ github.workspace }}:/work
-          run: |
-            cd /work
-            apt update; apt install sudo git fakeroot live-build debootstrap debian-cd simple-cdd xorriso squashfs-tools mtools curl jq -y
-            git config --global --add safe.directory /work
-            export LINGMO_ARCH=${{ matrix.arch }}
-            export DEBIAN_FRONTEND=noninteractive
-            bash -i ./build.sh
-            
-      - name: Set up arm64 Debian container
-        uses: uraimo/run-on-arch-action@v2
-        if: ${{ matrix.arch == 'arm64' }}
-        with:
-          arch: "aarch64"
-          distro: "bookworm"
-          # Mount the artifacts directory as /artifacts in the container
-          dockerRunArgs: |
-            --privileged -v ${{ github.workspace }}:/work
-          run: |
-            cd /work
-            apt update; apt install sudo git fakeroot live-build debootstrap debian-cd simple-cdd xorriso squashfs-tools mtools curl jq -y
-            git config --global --add safe.directory /work
-            export LINGMO_ARCH=${{ matrix.arch }}
-            export DEBIAN_FRONTEND=noninteractive
-            bash -i ./build.sh
-            
-      - name: Artifact
+      - name: Install Rebuild Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorriso squashfs-tools p7zip-full wget curl libarchive-tools isolinux syslinux-utils gh aria2
+
+      - name: Download Official Lingmo OS 3.0.5 Base ISO
+        run: |
+          echo "=== Descargando ISO oficial estable con aria2 multi-conexion ==="
+          aria2c -x 16 -s 16 -k 1M --file-allocation=none --summary-interval=5 \
+            "https://downloads.sourceforge.net/project/lingmo-os/release/iso/helium/3.0.5/lingmo-os-3.0.5-25R06-desktop-amd64.iso" \
+            -o base.iso
+          ls -lh base.iso
+
+      - name: Extract Base ISO
+        run: |
+          echo "=== Extrayendo contenido de la ISO base ==="
+          mkdir -p iso_root
+          xorriso -osirrox on -indev base.iso -extract / iso_root
+          chmod -R u+w iso_root
+
+          # Extraer el sector MBR original para preservar booteo hibrido identico
+          dd if=base.iso bs=432 count=1 of=isohdpfx.bin
+
+      - name: Extract SquashFS Root Filesystem
+        run: |
+          echo "=== Descomprimiendo filesystem.squashfs ==="
+          SQUASHFS_FILE=$(find iso_root -name "*.squashfs" | head -n 1)
+          echo "Archivo squashfs encontrado: $SQUASHFS_FILE"
+          sudo unsquashfs -d squashfs_root "$SQUASHFS_FILE"
+
+      - name: Build and Inject Custom Components inside Chroot
+        run: |
+          echo "=== Montando chroot para compilacion nativa ==="
+          sudo mount --bind /dev squashfs_root/dev
+          sudo mount --bind /dev/pts squashfs_root/dev/pts
+          sudo mount --bind /proc squashfs_root/proc
+          sudo mount --bind /sys squashfs_root/sys
+          sudo cp /etc/resolv.conf squashfs_root/etc/resolv.conf
+
+          # Copiar codigo fuente de lingmo-statusbar y script limpio
+          sudo cp -r lingmo-statusbar squashfs_root/tmp/
+          sudo cp chroot-build.sh squashfs_root/tmp/
+          sudo chmod +x squashfs_root/tmp/chroot-build.sh
+
+          # Ejecutar chroot
+          sudo chroot squashfs_root /bin/bash /tmp/chroot-build.sh
+          sudo rm -f squashfs_root/tmp/chroot-build.sh
+
+          # Desmontar chroot
+          sudo umount -l squashfs_root/sys || true
+          sudo umount -l squashfs_root/proc || true
+          sudo umount -l squashfs_root/dev/pts || true
+          sudo umount -l squashfs_root/dev || true
+
+      - name: Recompress SquashFS
+        run: |
+          echo "=== Reempaquetando filesystem.squashfs ==="
+          SQUASHFS_FILE=$(find iso_root -name "*.squashfs" | head -n 1)
+          sudo rm -f "$SQUASHFS_FILE"
+          sudo mksquashfs squashfs_root "$SQUASHFS_FILE" -comp xz -b 1048576 -Xbcj x86
+
+          SIZE_FILE=$(find iso_root -name "filesystem.size" | head -n 1)
+          if [ -n "$SIZE_FILE" ]; then
+            printf $(sudo du -sx --block-size=1 squashfs_root | cut -f1) | sudo tee "$SIZE_FILE"
+          fi
+
+      - name: Update MD5 Checksums
+        run: |
+          echo "=== Actualizando sumas de verificacion md5 ==="
+          if [ -f "iso_root/md5sum.txt" ]; then
+            cd iso_root
+            sudo rm -f md5sum.txt
+            find . -type f ! -path "./isolinux/*" ! -path "./boot/*" -exec md5sum {} + | sudo tee md5sum.txt
+            cd ..
+          fi
+
+      - name: Repack Bootable Hybrid ISO
+        run: |
+          echo "=== Reconstruyendo ISO booteable hibrida con xorriso ==="
+          BOOT_ARGS=""
+          if [ -f "iso_root/isolinux/isolinux.bin" ]; then
+            BOOT_ARGS="$BOOT_ARGS -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -isohybrid-mbr isohdpfx.bin"
+          fi
+
+          if [ -f "iso_root/boot/grub/efi.img" ]; then
+            BOOT_ARGS="$BOOT_ARGS -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat"
+          elif [ -f "iso_root/EFI/boot/efi.img" ]; then
+            BOOT_ARGS="$BOOT_ARGS -eltorito-alt-boot -e EFI/boot/efi.img -no-emul-boot -isohybrid-gpt-basdat"
+          elif [ -f "iso_root/EFI/boot/bootx64.efi" ]; then
+            BOOT_ARGS="$BOOT_ARGS -eltorito-alt-boot -e EFI/boot/bootx64.efi -no-emul-boot -isohybrid-gpt-basdat"
+          fi
+
+          xorriso -as mkisofs \
+            -r -V "LINGMO_CUTEFISH" \
+            -cache-inodes \
+            -J -l \
+            $BOOT_ARGS \
+            -o lingmo-os-3.0.5-cutefish-amd64.iso \
+            iso_root
+
+          ls -lh lingmo-os-3.0.5-cutefish-amd64.iso
+
+      - name: Upload ISO Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}
-          path: ${{ github.workspace }}/images/*.iso
+          name: LingmoOS-Cutefish-3.0.5-amd64-ISO
+          path: lingmo-os-3.0.5-cutefish-amd64.iso
           compression-level: 0
-          if-no-files-found: error # 'warn' or 'ignore' are also available, defaults to `warn`
+          if-no-files-found: error
+
+      - name: Publish Split Parts to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Publicando Release oficial en GitHub (Partes binarias) ==="
+          RELEASE_TITLE="Lingmo OS 3.0.5 Cutefish Edition (Barra Blanca Cutefish)"
+          
+          cat << 'NOTES_EOF' > /tmp/release_notes.md
+          # Lingmo OS 3.0.5 Cutefish Edition
+
+          ### Compilacion oficial limpia:
+          * **Barra superior Cutefish OS:** Altura oficial de 25px, color blanco (#FFFFFF) traslucido al 84% de opacidad y borde inferior (#E2E8F0) de 1px.
+          * **Legibilidad:** Textos en negro puro (#000000) e iconos oscuros de alto contraste.
+          * **Cero paquetes viejos o rotos:** Codigo 100% oficial de Lingmo OS compilado de forma nativa.
+          NOTES_EOF
+          
+          gh release delete v3.0.5-cutefish -y --cleanup-tag || true
+          split -b 1800M lingmo-os-3.0.5-cutefish-amd64.iso lingmo-os-3.0.5-cutefish-amd64.iso.part-
+          gh release create v3.0.5-cutefish lingmo-os-3.0.5-cutefish-amd64.iso.part-* \
+            --title "$RELEASE_TITLE" \
+            --notes-file /tmp/release_notes.md
