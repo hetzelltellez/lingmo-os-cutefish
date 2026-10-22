@@ -326,3 +326,21 @@ void Appearance::darkThemeChanged()
     QProcess::startDetached("lookandfeeltool", QStringList() << "-a" << "org.lingmo.oceandark.desktop");
     QProcess::startDetached("gsettings", QStringList() << "set" << "org.gnome.desktop.interface" << "color-scheme" << "prefer-dark");
 }
+int Appearance::statusbarStyle() const
+{
+    QSettings settings(QSettings::UserScope, "lingmoos", "statusbar");
+    return settings.value("BarStyle", 0).toInt();
+}
+
+void Appearance::setStatusbarStyle(int style)
+{
+    QSettings settings(QSettings::UserScope, "lingmoos", "statusbar");
+    settings.setValue("BarStyle", style);
+    settings.sync();
+    emit statusbarStyleChanged();
+}
+
+void Appearance::restoreOriginalStatusbar()
+{
+    setStatusbarStyle(3);
+}

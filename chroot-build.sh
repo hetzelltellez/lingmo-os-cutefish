@@ -24,6 +24,20 @@ echo "=== [3/4] Verificando instalacion de /usr/bin/lingmo-statusbar ==="
 ls -lh /usr/bin/lingmo-statusbar
 test -f /usr/bin/lingmo-statusbar
 
+echo "=== [3.5/4] Compilando lingmo-settings oficial con soporte de apariencia de barra superior ==="
+if [ -d "/tmp/lingmo-settings" ]; then
+    apt-get install -y --no-install-recommends libicu-dev libcrypt-dev libfreetype6-dev libfontconfig1-dev || true
+    cd /tmp/lingmo-settings
+    rm -rf build && mkdir build && cd build
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release || true
+    if [ -f "Makefile" ]; then
+        make -j$(nproc) || true
+        make install || true
+    fi
+    cd /
+    rm -rf /tmp/lingmo-settings
+fi
+
 echo "=== [4/4] Configurando Tap-to-Click (tocar para hacer clic) por defecto en Trackpads de Laptops ==="
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'TOUCHPAD_EOF' > /etc/X11/xorg.conf.d/40-libinput.conf
@@ -186,5 +200,52 @@ if [ -f /etc/calamares/modules/welcome.conf ]; then
     sed -i '/- partitions/d' /etc/calamares/modules/welcome.conf || true
 fi
 
-rm -rf /tmp/lingmo-statusbar
+# 6. Configurar valores por defecto de la barra superior (Auto: sincronizada con modo oscuro)
+mkdir -p /etc/skel/.config/lingmoos
+cat << 'STATUSBAR_DEFAULT' > /etc/skel/.config/lingmoos/statusbar.conf
+[General]
+BarStyle=0
+STATUSBAR_DEFAULT
+
+for u_home in /home/* /root; do
+    if [ -d "$u_home" ]; then
+        mkdir -p "$u_home/.config/lingmoos"
+        cp -f /etc/skel/.config/lingmoos/statusbar.conf "$u_home/.config/lingmoos/statusbar.conf" 2>/dev/null || true
+    fi
+done
+
+# 7. Configurar comando helper para instalar Spotify oficial (.deb compatible con GLIBC 2.36)
+cat << 'SPOTIFY_SH' > /usr/local/bin/instalar-spotify
+#!/bin/bash
+set -e
+echo "=========================================================="
+echo "    Instalador Oficial de Spotify (.deb para Debian 12)   "
+echo "=========================================================="
+echo "Descargando paquete oficial de Spotify compatible con GLIBC 2.36..."
+
+TMP_DIR=$(mktemp -d)
+cd "$TMP_DIR"
+
+SPOTIFY_DEB="spotify-client_1.2.74.477.g00424584_amd64.deb"
+wget -O "$SPOTIFY_DEB" "https://archive.org/download/spotify-client-1.2.74.477/$SPOTIFY_DEB" || \
+wget -O "$SPOTIFY_DEB" "https://raw.githubusercontent.com/hetzelltellez/lingmo-os-cutefish/master/$SPOTIFY_DEB" || true
+
+if [ -f "$SPOTIFY_DEB" ] && [ -s "$SPOTIFY_DEB" ]; then
+    echo "Instalando Spotify..."
+    apt-get update || true
+    apt-get install -y "./$SPOTIFY_DEB" || dpkg -i "./$SPOTIFY_DEB" || apt-get install -f -y
+    apt-mark hold spotify-client
+    echo ""
+    echo "=========================================================="
+    echo "   Spotify ha sido instalado exitosamente en tu sistema!  "
+    echo "=========================================================="
+else
+    echo "Error: No se pudo descargar el paquete .deb. Verifica tu conexion a internet."
+fi
+
+rm -rf "$TMP_DIR"
+SPOTIFY_SH
+chmod +x /usr/local/bin/instalar-spotify
+
+rm -rf /tmp/lingmo-statusbar /tmp/lingmo-settings
 apt-get clean

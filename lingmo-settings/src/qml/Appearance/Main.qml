@@ -131,6 +131,69 @@ ItemPage {
             }
 
             RoundedItem {
+                Label {
+                    text: qsTr("Top Bar Appearance")
+                    color: LingmoUI.Theme.disabledTextColor
+                }
+
+                RowLayout {
+                    spacing: LingmoUI.Units.largeSpacing * 2
+
+                    Label {
+                        text: qsTr("Top bar style")
+                        Layout.alignment: Qt.AlignVCenter | Qt.AlignLeft
+                    }
+
+                    TabBar {
+                        Layout.fillWidth: true
+                        currentIndex: {
+                            if (appearance.statusbarStyle >= 0 && appearance.statusbarStyle <= 2)
+                                return appearance.statusbarStyle;
+                            return 0;
+                        }
+                        onCurrentIndexChanged: {
+                            appearance.setStatusbarStyle(currentIndex);
+                        }
+
+                        TabButton {
+                            text: qsTr("Auto")
+                        }
+
+                        TabButton {
+                            text: qsTr("Light")
+                        }
+
+                        TabButton {
+                            text: qsTr("Dark")
+                        }
+                    }
+                }
+
+                HorizontalDivider {}
+
+                RowLayout {
+                    spacing: LingmoUI.Units.largeSpacing
+
+                    Label {
+                        text: qsTr("Original Cutefish appearance")
+                        Layout.alignment: Qt.AlignVCenter | Qt.AlignLeft
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    Button {
+                        text: qsTr("Restore")
+                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                        onClicked: {
+                            appearance.restoreOriginalStatusbar();
+                        }
+                    }
+                }
+            }
+
+            RoundedItem {
                 RowLayout {
                     spacing: LingmoUI.Units.largeSpacing * 2
 

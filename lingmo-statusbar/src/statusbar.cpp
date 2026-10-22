@@ -31,6 +31,8 @@
 #include <QApplication>
 #include <QSettings>
 #include <QScreen>
+#include <QFileInfo>
+#include <QDir>
 
 #include <NETWM>
 #include <KWindowSystem>
@@ -39,9 +41,31 @@
 StatusBar::StatusBar(QQuickView *parent)
     : QQuickView(parent)
     , m_acticity(new Activity)
+    , m_twentyFourTime(false)
+    , m_barStyle(0)
+    , m_statusbarSettings(nullptr)
+    , m_statusbarWatcher(nullptr)
 {
     QSettings settings("lingmoos", "locale");
     m_twentyFourTime = settings.value("twentyFour", false).toBool();
+
+    m_statusbarSettings = new QSettings(QSettings::UserScope, "lingmoos", "statusbar", this);
+    m_barStyle = m_statusbarSettings->value("BarStyle", 0).toInt();
+
+    m_statusbarWatcher = new QFileSystemWatcher(this);
+    QString confPath = m_statusbarSettings->fileName();
+    if (!confPath.isEmpty()) {
+        QFileInfo fi(confPath);
+        if (!fi.exists()) {
+            QDir().mkpath(fi.absolutePath());
+            m_statusbarSettings->setValue("BarStyle", m_barStyle);
+            m_statusbarSettings->sync();
+        }
+        if (QFileInfo::exists(confPath)) {
+            m_statusbarWatcher->addPath(confPath);
+        }
+    }
+    connect(m_statusbarWatcher, &QFileSystemWatcher::fileChanged, this, &StatusBar::onStatusbarConfigChanged);
 
     QSurfaceFormat fmt = format();
     fmt.setAlphaBufferSize(8);
@@ -87,6 +111,40 @@ QRect StatusBar::screenRect()
 bool StatusBar::twentyFourTime()
 {
     return m_twentyFourTime;
+}
+
+int StatusBar::barStyle() const
+{
+    return m_barStyle;
+}
+
+void StatusBar::setBarStyle(int style)
+{
+    if (m_barStyle != style) {
+        m_barStyle = style;
+        m_statusbarSettings->setValue("BarStyle", m_barStyle);
+        m_statusbarSettings->sync();
+        emit barStyleChanged();
+    }
+}
+
+void StatusBar::restoreOriginal()
+{
+    setBarStyle(3);
+}
+
+void StatusBar::onStatusbarConfigChanged()
+{
+    m_statusbarSettings->sync();
+    int newStyle = m_statusbarSettings->value("BarStyle", 0).toInt();
+    if (m_barStyle != newStyle) {
+        m_barStyle = newStyle;
+        emit barStyleChanged();
+    }
+    QString confPath = m_statusbarSettings->fileName();
+    if (!confPath.isEmpty() && QFileInfo::exists(confPath)) {
+        m_statusbarWatcher->addPath(confPath);
+    }
 }
 
 void StatusBar::setBatteryPercentage(bool enabled)

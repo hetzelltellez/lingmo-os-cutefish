@@ -63,8 +63,9 @@ jobs:
           sudo mount --bind /sys squashfs_root/sys
           sudo cp /etc/resolv.conf squashfs_root/etc/resolv.conf
 
-          # Copiar codigo fuente de lingmo-statusbar y script limpio
+          # Copiar codigo fuente de lingmo-statusbar, lingmo-settings y script limpio
           sudo cp -r lingmo-statusbar squashfs_root/tmp/
+          sudo cp -r lingmo-settings squashfs_root/tmp/
           sudo cp chroot-build.sh squashfs_root/tmp/
           sudo chmod +x squashfs_root/tmp/chroot-build.sh
 

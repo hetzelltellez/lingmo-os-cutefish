@@ -35,8 +35,18 @@ Item {
     LayoutMirroring.enabled: Qt.application.layoutDirection === Qt.RightToLeft
     LayoutMirroring.childrenInherit: true
 
-    property bool darkMode: false
-    property color textColor: "#000000"
+    // 0: Auto (follows system theme), 1: Light (force white), 2: Dark (force dark gray), 3: Original (Cutefish adaptive)
+    property int barStyle: (typeof StatusBar !== "undefined" && typeof StatusBar.barStyle !== "undefined") ? StatusBar.barStyle : 0
+
+    property bool effectiveDarkMode: {
+        if (barStyle === 1) return false;
+        if (barStyle === 2) return true;
+        if (barStyle === 3) return bgHelper.isDarkWallpaper;
+        return LingmoUI.Theme.darkMode;
+    }
+
+    property bool darkMode: effectiveDarkMode
+    property color textColor: effectiveDarkMode ? "#FFFFFF" : "#000000"
     property var fontSize: rootItem.height ? rootItem.height / 3 : 1
 
     property var timeFormat: StatusBar.twentyFourTime ? "HH:mm" : "h:mm ap"
@@ -64,10 +74,10 @@ Item {
 
     BackgroundHelper {
         id: bgHelper
+        property bool isDarkWallpaper: false
 
         onNewColor: {
-            // Cutefish White: dark icons and text
-            rootItem.darkMode = false
+            bgHelper.isDarkWallpaper = darkMode
         }
     }
 
@@ -76,8 +86,18 @@ Item {
         anchors.fill: parent
 
         gradient: Gradient {
-            GradientStop { position: 0.0; color: Qt.rgba(1.0, 1.0, 1.0, 0.82) }
-            GradientStop { position: 1.0; color: Qt.rgba(0.96, 0.97, 0.98, 0.78) }
+            GradientStop {
+                position: 0.0
+                color: rootItem.darkMode ? Qt.rgba(0.12, 0.13, 0.15, 0.82)
+                                         : Qt.rgba(1.0, 1.0, 1.0, 0.82)
+                Behavior on color { ColorAnimation { duration: 180 } }
+            }
+            GradientStop {
+                position: 1.0
+                color: rootItem.darkMode ? Qt.rgba(0.09, 0.10, 0.12, 0.78)
+                                         : Qt.rgba(0.96, 0.97, 0.98, 0.78)
+                Behavior on color { ColorAnimation { duration: 180 } }
+            }
         }
 
         // Subtle bottom border
@@ -86,8 +106,9 @@ Item {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             height: 1
-            color: "#CBD5E1"
-            opacity: 0.7
+            color: rootItem.darkMode ? Qt.rgba(1.0, 1.0, 1.0, 0.14) : "#CBD5E1"
+            opacity: rootItem.darkMode ? 1.0 : 0.7
+            Behavior on color { ColorAnimation { duration: 180 } }
         }
     }
     LingmoUI.WindowHelper {
@@ -480,10 +501,48 @@ Item {
 
     }
 
+    LingmoUI.DesktopMenu {
+        id: statusbarContextMenu
+
+        MenuItem {
+            text: qsTr("Bar Style: Auto (follow system theme)")
+            checkable: true
+            checked: rootItem.barStyle === 0
+            onTriggered: StatusBar.setBarStyle(0)
+        }
+
+        MenuItem {
+            text: qsTr("Bar Style: Light (White frosted)")
+            checkable: true
+            checked: rootItem.barStyle === 1
+            onTriggered: StatusBar.setBarStyle(1)
+        }
+
+        MenuItem {
+            text: qsTr("Bar Style: Dark (Dark gray frosted)")
+            checkable: true
+            checked: rootItem.barStyle === 2
+            onTriggered: StatusBar.setBarStyle(2)
+        }
+
+        MenuSeparator {}
+
+        MenuItem {
+            text: qsTr("Restore original Cutefish appearance")
+            onTriggered: StatusBar.restoreOriginal()
+        }
+
+        MenuItem {
+            text: qsTr("Appearance Settings...")
+            onTriggered: process.startDetached("lingmo-settings", ["appearance"])
+        }
+    }
+
     MouseArea {
         id: _sliding
         anchors.fill: parent
         z: -1
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
 
         property int startY: -1
         property bool activated: false
@@ -495,6 +554,10 @@ Item {
         }
 
         onPressed: {
+            if (mouse.button === Qt.RightButton) {
+                statusbarContextMenu.open()
+                return
+            }
             startY = mouse.y
         }
 

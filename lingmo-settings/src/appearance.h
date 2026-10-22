@@ -39,6 +39,7 @@ class Appearance : public QObject
     Q_PROPERTY(bool dockRoundedWindow READ dockRoundedWindow WRITE setDockRoundedWindow NOTIFY dockRoundedWindowChanged)
     Q_PROPERTY(bool systemEffects READ systemEffects WRITE setSystemEffects NOTIFY systemEffectsChanged)
     Q_PROPERTY(int minimiumAnimation READ minimiumAnimation WRITE setMinimiumAnimation NOTIFY minimiumAnimationChanged)
+    Q_PROPERTY(int statusbarStyle READ statusbarStyle WRITE setStatusbarStyle NOTIFY statusbarStyleChanged)
 
 public:
     explicit Appearance(QObject *parent = nullptr);
@@ -87,6 +88,10 @@ public:
     Q_INVOKABLE void lightThemeChanged();
     Q_INVOKABLE void darkThemeChanged();
 
+    int statusbarStyle() const;
+    Q_INVOKABLE void setStatusbarStyle(int style);
+    Q_INVOKABLE void restoreOriginalStatusbar();
+
 signals:
     void dockIconSizeChanged();
     void dockDirectionChanged();
@@ -99,6 +104,7 @@ signals:
     void dockRoundedWindowChanged();
     void systemEffectsChanged();
     void minimiumAnimationChanged();
+    void statusbarStyleChanged();
 
 private:
     QDBusInterface m_interface;

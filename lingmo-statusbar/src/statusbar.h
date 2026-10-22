@@ -21,6 +21,8 @@
 #define STATUSBAR_H
 
 #include <QQuickView>
+#include <QSettings>
+#include <QFileSystemWatcher>
 #include "activity.h"
 
 class StatusBar : public QQuickView
@@ -28,12 +30,17 @@ class StatusBar : public QQuickView
     Q_OBJECT
     Q_PROPERTY(QRect screenRect READ screenRect NOTIFY screenRectChanged)
     Q_PROPERTY(bool twentyFourTime READ twentyFourTime NOTIFY twentyFourTimeChanged)
+    Q_PROPERTY(int barStyle READ barStyle WRITE setBarStyle NOTIFY barStyleChanged)
 
 public:
     explicit StatusBar(QQuickView *parent = nullptr);
 
     QRect screenRect();
     bool twentyFourTime();
+    int barStyle() const;
+
+    Q_INVOKABLE void setBarStyle(int style);
+    Q_INVOKABLE void restoreOriginal();
 
     void setBatteryPercentage(bool enabled);
     void setTwentyFourTime(bool t);
@@ -45,15 +52,20 @@ signals:
     void screenRectChanged();
     void launchPadChanged();
     void twentyFourTimeChanged();
+    void barStyleChanged();
 
 private slots:
     void initState();
     void onPrimaryScreenChanged(QScreen *screen);
+    void onStatusbarConfigChanged();
 
 private:
     QRect m_screenRect;
     Activity *m_acticity;
     bool m_twentyFourTime;
+    int m_barStyle;
+    QSettings *m_statusbarSettings;
+    QFileSystemWatcher *m_statusbarWatcher;
 };
 
 #endif // STATUSBAR_H
