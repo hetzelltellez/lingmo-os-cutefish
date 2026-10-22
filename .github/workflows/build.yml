@@ -73,6 +73,27 @@ jobs:
           sudo chroot squashfs_root /bin/bash /tmp/chroot-build.sh
           sudo rm -f squashfs_root/tmp/chroot-build.sh
 
+          # Sincronizar kernel e initramfs actualizados a la raíz de arranque de la ISO
+          LATEST_VMLINUZ=$(ls -t squashfs_root/boot/vmlinuz-* 2>/dev/null | head -n 1)
+          LATEST_INITRD=$(ls -t squashfs_root/boot/initrd.img-* 2>/dev/null | head -n 1)
+          echo "Kernel detectado: $LATEST_VMLINUZ"
+          echo "Initramfs detectado: $LATEST_INITRD"
+          if [ -n "$LATEST_VMLINUZ" ]; then
+            for target in $(find iso_root -name "vmlinuz*" -type f); do
+              echo "Sincronizando kernel hacia $target..."
+              sudo cp -f "$LATEST_VMLINUZ" "$target" || true
+            done
+          fi
+          if [ -n "$LATEST_INITRD" ]; then
+            for target in $(find iso_root -name "initrd*" -type f); do
+              echo "Sincronizando initramfs hacia $target..."
+              sudo cp -f "$LATEST_INITRD" "$target" || true
+            done
+          fi
+
+          # Agregar parametros de arranque para forzar deteccion de NVMe y Intel VMD en laptops
+          find iso_root -type f \( -name "*.cfg" -o -name "*.conf" \) -exec sudo sed -i 's/boot=live/boot=live intel_vmd=on nvme_core.default_ps_max_latency_us=0/g' {} + || true
+
           # Desmontar chroot
           sudo umount -l squashfs_root/sys || true
           sudo umount -l squashfs_root/proc || true
