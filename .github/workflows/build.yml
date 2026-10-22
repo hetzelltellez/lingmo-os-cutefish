@@ -63,9 +63,10 @@ jobs:
           sudo mount --bind /sys squashfs_root/sys
           sudo cp /etc/resolv.conf squashfs_root/etc/resolv.conf
 
-          # Copiar codigo fuente de lingmo-statusbar, lingmo-settings y script limpio
+          # Copiar codigo fuente de lingmo-statusbar, lingmo-settings, lingmo-dock y script limpio
           sudo cp -r lingmo-statusbar squashfs_root/tmp/
           sudo cp -r lingmo-settings squashfs_root/tmp/
+          sudo cp -r lingmo-dock squashfs_root/tmp/
           sudo cp chroot-build.sh squashfs_root/tmp/
           sudo chmod +x squashfs_root/tmp/chroot-build.sh
 
@@ -91,8 +92,8 @@ jobs:
             done
           fi
 
-          # Agregar parametros de arranque para forzar deteccion de NVMe y Intel VMD en laptops
-          find iso_root -type f \( -name "*.cfg" -o -name "*.conf" \) -exec sudo sed -i 's/boot=live/boot=live intel_vmd=on nvme_core.default_ps_max_latency_us=0/g' {} + || true
+          # Agregar parametros de arranque para forzar deteccion de NVMe y Intel IOMMU en laptops
+          find iso_root -type f \( -name "*.cfg" -o -name "*.conf" \) -exec sudo sed -i 's/boot=live/boot=live intel_iommu=on nvme_core.default_ps_max_latency_us=0/g' {} + || true
 
           # Desmontar chroot
           sudo umount -l squashfs_root/sys || true

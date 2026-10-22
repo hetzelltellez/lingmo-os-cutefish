@@ -38,6 +38,21 @@ if [ -d "/tmp/lingmo-settings" ]; then
     rm -rf /tmp/lingmo-settings
 fi
 
+echo "=== [3.6/4] Compilando lingmo-dock oficial con menu de apagado en launcher ==="
+if [ -d "/tmp/lingmo-dock" ]; then
+    cd /tmp/lingmo-dock
+    rm -rf build && mkdir build && cd build
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release || true
+    if [ -f "Makefile" ]; then
+        make -j$(nproc) || true
+        make install || true
+    fi
+    cd /
+    rm -rf /tmp/lingmo-dock
+    echo "=== Verificando binario /usr/bin/lingmo-dock compilado ==="
+    ls -lh /usr/bin/lingmo-dock || true
+fi
+
 echo "=== [4/4] Configurando Touchpad (Tap-to-Click y Natural Scrolling) y Dock/KWin por defecto ==="
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'TOUCHPAD_EOF' > /etc/X11/xorg.conf.d/40-libinput.conf
@@ -304,11 +319,52 @@ ALL ALL=(ALL) NOPASSWD: ALL
 SUDOERS_CALAMARES
 chmod 440 /etc/sudoers.d/calamares
 
+# Configurar Polkit/pkexec para permitir ejecucion directa de Calamares y administracion de discos
+mkdir -p /etc/polkit-1/localauthority/50-local.d
+cat << 'POLKIT_CALAMARES' > /etc/polkit-1/localauthority/50-local.d/calamares.pkla
+[Allow calamares and storage for all]
+Identity=unix-user:*
+Action=com.github.calamares.calamares;org.freedesktop.policykit.exec;org.freedesktop.udisks2.*
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+POLKIT_CALAMARES
+
+mkdir -p /usr/share/polkit-1/rules.d
+cat << 'POLKIT_RULES' > /usr/share/polkit-1/rules.d/90-calamares.rules
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" || action.id.indexOf("calamares") !== -1 || action.id.indexOf("udisks2") !== -1) {
+        return polkit.Result.YES;
+    }
+});
+POLKIT_RULES
+
 # Agregar usuario lingmo a los grupos de administracion de discos
 usermod -aG sudo,disk,storage lingmo 2>/dev/null || true
 
-# 4. Modificar lanzadores desktop de calamares para ejecutar con permisos completos
-find /usr/share/applications -name "*calamares*.desktop" -exec sed -i 's/^Exec=.*/Exec=sudo -E \/usr\/bin\/calamares/g' {} + || true
+# 4. Modificar lanzadores desktop e installer wrappers para ejecutar con permisos completos
+find /usr/share/applications /etc/xdg/autostart /etc/skel/.config/autostart /home/*/.config/autostart /home/*/Desktop \
+  -type f \( -name "*calamares*.desktop" -o -name "*lingmo-installer*.desktop" \) 2>/dev/null \
+  -exec sed -i 's/^Exec=.*/Exec=sudo -E \/usr\/bin\/calamares/g' {} + || true
+
+# Sobrescribir wrapper lingmo-installer-config para arrancar directo como root
+cat << 'LINGMO_INSTALLER_WRAPPER' > /usr/bin/lingmo-installer-config
+#!/bin/bash
+sudo mv /etc/fstab /etc/fstab.orig.calamares 2>/dev/null || true
+modprobe nvme 2>/dev/null || true
+modprobe nvme_core 2>/dev/null || true
+modprobe vmd 2>/dev/null || true
+modprobe ahci 2>/dev/null || true
+modprobe sd_mod 2>/dev/null || true
+modprobe dm_mod 2>/dev/null || true
+partprobe 2>/dev/null || true
+xhost +local:root >/dev/null 2>&1 || true
+xhost +local:lingmo >/dev/null 2>&1 || true
+xhost +local: >/dev/null 2>&1 || true
+export QT_AUTO_SCREEN_SCALE_FACTOR=1
+exec sudo -E /usr/bin/calamares "$@"
+LINGMO_INSTALLER_WRAPPER
+chmod +x /usr/bin/lingmo-installer-config || true
 
 # 5. Cargar modulos de kernel en boot y en initramfs
 mkdir -p /etc/modules-load.d
@@ -332,59 +388,45 @@ INITRAMFS_MODULES
 update-initramfs -u || true
 
 # 6. Desactivar COMPLETAMENTE cualquier bloqueo de requerimientos en Calamares
-python3 -c "
-import os, re
-
-for root, dirs, files in os.walk('/'):
-    if any(p in root for p in ['/proc', '/sys', '/dev']): continue
-    for f in files:
-        if f.endswith(('.conf', '.yaml')) and any(w in f.lower() for w in ['welcome', 'calamares', 'partition']):
-            filepath = os.path.join(root, f)
-            try:
-                with open(filepath, 'r', encoding='utf-8', errors='ignore') as fp:
-                    content = fp.read()
-                orig = content
-                # Anular requerimientos obligatorios
-                content = re.sub(r'required\s*:\s*\[[^\]]*\]', 'required: []', content)
-                content = re.sub(r'required\s*:\s*\n(\s*-[^\n]*\n)+', 'required: []\n', content)
-                # Comentar verificaciones de storage y partitions para eliminar la X roja
-                content = re.sub(r'(\s*-\s*storage[^\n]*)', r'# \1', content)
-                content = re.sub(r'(\s*-\s*partitions[^\n]*)', r'# \1', content)
-                content = re.sub(r'requiredStorage\s*:[^\n]*', 'requiredStorage: 0', content)
-                content = re.sub(r'requiredRam\s*:[^\n]*', 'requiredRam: 0', content)
-                if 'allowManualPartitioning' in content:
-                    content = re.sub(r'allowManualPartitioning\s*:[^\n]*', 'allowManualPartitioning: true', content)
-                if content != orig:
-                    with open(filepath, 'w', encoding='utf-8') as fp:
-                        fp.write(content)
-                    print('Calamares config parchado:', filepath)
-            except Exception:
-                pass
-" || true
-
-# Sobrescribir directamente welcome.conf en todas las ubicaciones conocidas para asegurar botón Siguiente habilitado
-for w_dir in /etc/calamares/modules /usr/share/calamares/modules /etc/calamares; do
-    if [ -d "$w_dir" ]; then
-        cat << 'WELCOME_SAFE' > "$w_dir/welcome.conf"
----
+SAFE_WELCOME_CONTENT="---
 showSupportUrl: false
 showKnownIssuesUrl: false
 showReleaseNotesUrl: false
+
+check: []
+required: []
 
 requirements:
     requiredStorage: 0
     requiredRam: 0
     check: []
     required: []
-WELCOME_SAFE
-    fi
+"
+
+# Sobrescribir todos los archivos welcome.conf en el sistema
+find / -name "*welcome*.conf" 2>/dev/null | while read -r wfile; do
+    echo "$SAFE_WELCOME_CONTENT" > "$wfile"
+    echo "welcome.conf blindado: $wfile"
+done
+
+for w_dir in /etc/calamares/modules /usr/share/calamares/modules /etc/calamares; do
+    mkdir -p "$w_dir"
+    echo "$SAFE_WELCOME_CONTENT" > "$w_dir/welcome.conf"
 done
 
 # Habilitar particionado manual en partition.conf
-for p_dir in /etc/calamares/modules /usr/share/calamares/modules /etc/calamares; do
-    if [ -f "$p_dir/partition.conf" ]; then
-        sed -i 's/allowManualPartitioning:.*/allowManualPartitioning: true/g' "$p_dir/partition.conf" || true
-    fi
+find / -name "*partition*.conf" 2>/dev/null | while read -r pfile; do
+    sed -i 's/allowManualPartitioning:.*/allowManualPartitioning: true/g' "$pfile" || true
+    sed -i 's/enableLuks:.*/enableLuks: false/g' "$pfile" || true
+    sed -i 's/drawExistingPartitionTable:.*/drawExistingPartitionTable: true/g' "$pfile" || true
+    echo "partition.conf blindado: $pfile"
+done
+
+# Habilitar botón Cancelar y flujo limpio en settings.conf
+find / -name "*settings*.conf" 2>/dev/null | grep -i calamares | while read -r sfile; do
+    sed -i 's/disable-cancel:.*/disable-cancel: false/g' "$sfile" || true
+    sed -i 's/disable-cancel-during-exec:.*/disable-cancel-during-exec: false/g' "$sfile" || true
+    echo "settings.conf blindado: $sfile"
 done
 
 # 7. Configurar valores por defecto de la barra superior (Auto: sincronizada con modo oscuro)
