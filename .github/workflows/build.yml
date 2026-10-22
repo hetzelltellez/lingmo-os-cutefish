@@ -4,7 +4,7 @@ permissions: write-all
 
 on:
   push:
-    branches: [ "master", "main" ]
+    branches: [ "master", "main", "feature/debian-13-trixie" ]
   workflow_dispatch:
 
 jobs:

@@ -3,9 +3,25 @@ set -e
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo "=== [1/4] Actualizando repositorios e instalando dependencias para lingmo-statusbar ==="
+echo "=== [0/5] Migrando sistema base a Debian 13 (Trixie) con GLIBC >= 2.39 ==="
+cat << 'TRIXIE_SOURCES' > /etc/apt/sources.list
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+TRIXIE_SOURCES
+
 rm -f /etc/apt/sources.list.d/*lingmo* || true
 apt-get update || true
+
+# Actualizar las bibliotecas base y herramientas del sistema a Debian 13
+apt-get upgrade -y --without-new-pkgs || true
+apt-get dist-upgrade -y || true
+
+echo "=== Version de GNU C Library instalada tras la migracion a Trixie ==="
+ldd --version | head -n 1 || true
+dpkg -l libc6 || true
+
+echo "=== [1/4] Instalando dependencias de compilacion ==="
 
 apt-get install -y --no-install-recommends \
   build-essential cmake pkg-config extra-cmake-modules \
