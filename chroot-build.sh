@@ -141,5 +141,50 @@ for u_home in /home/* /root; do
     fi
 done
 
+echo "=== [6/6] Reparando Deteccion de Discos NVMe / SATA / RST en Calamares Installer ==="
+# 1. Instalar utilidades esenciales de almacenamiento y detección de particiones
+apt-get install -y --no-install-recommends \
+  nvme-cli mdadm libblockdev-nvme2 smartmontools parted gparted kpmcore || true
+
+# 2. Cargar automáticamente módulos de kernel para NVMe, VMD (Intel RST) y SATA en el arranque
+mkdir -p /etc/modules-load.d
+cat << 'MODULES_STORAGE' > /etc/modules-load.d/storage.conf
+nvme
+nvme_core
+vmd
+ahci
+sd_mod
+dm_mod
+MODULES_STORAGE
+
+# 3. Incluir módulos en initramfs para detección temprana del disco
+mkdir -p /etc/initramfs-tools
+cat << 'INITRAMFS_MODULES' >> /etc/initramfs-tools/modules
+nvme
+nvme_core
+vmd
+ahci
+sd_mod
+INITRAMFS_MODULES
+update-initramfs -u || true
+
+# 4. Asegurar permisos de administrador para Calamares en el entorno Live
+mkdir -p /etc/polkit-1/rules.d
+cat << 'POLKIT_CALAMARES' > /etc/polkit-1/rules.d/49-calamares.rules
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.debian.pkexec.calamares" ||
+         action.id == "com.github.calamares.calamares" ||
+         action.id == "org.freedesktop.policykit.exec") &&
+        (subject.isInGroup("sudo") || subject.user == "lingmo")) {
+        return polkit.Result.YES;
+    }
+});
+POLKIT_CALAMARES
+
+# 5. Configurar bienvenida de Calamares para no bloquear por particiones previas
+if [ -f /etc/calamares/modules/welcome.conf ]; then
+    sed -i '/- partitions/d' /etc/calamares/modules/welcome.conf || true
+fi
+
 rm -rf /tmp/lingmo-statusbar
 apt-get clean
