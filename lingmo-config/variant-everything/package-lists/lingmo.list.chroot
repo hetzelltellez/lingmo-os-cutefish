@@ -67,3 +67,11 @@ fcitx5-chinese-addons
 
 # CJK Fonts
 fonts-noto-cjk
+
+# Soporte para Flatpak y Snap
+flatpak
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+snapd
+squashfuse
+fuse

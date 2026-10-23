@@ -59,6 +59,38 @@ if [ -f "/tmp/google-chrome-stable_current_amd64.deb" ] && [ -s "/tmp/google-chr
     rm -f /tmp/google-chrome-stable_current_amd64.deb
 fi
 
+# Blindar ejecucion de Google Chrome en modo Live
+chmod 4755 /opt/google/chrome/chrome-sandbox 2>/dev/null || true
+mkdir -p /etc/sysctl.d
+echo "kernel.unprivileged_userns_clone=1" > /etc/sysctl.d/00-local-userns.conf
+
+cat << 'CHROME_WRAPPER' > /usr/local/bin/google-chrome-stable
+#!/bin/bash
+REAL_CHROME="/opt/google/chrome/google-chrome"
+if [ ! -x "$REAL_CHROME" ]; then
+    REAL_CHROME="/usr/bin/google-chrome"
+fi
+
+CLEAN_ARGS=()
+for a in "$@"; do
+    if [ "$a" != "%U" ] && [ "$a" != "%u" ] && [ "$a" != "%F" ] && [ "$a" != "%f" ]; then
+        CLEAN_ARGS+=("$a")
+    fi
+done
+
+EXTRA_FLAGS="--disable-dev-shm-usage --password-store=basic --no-default-browser-check --no-first-run"
+
+if [ "$(id -u)" -eq 0 ]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --no-sandbox --test-type"
+fi
+
+exec "$REAL_CHROME" $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
+CHROME_WRAPPER
+chmod 755 /usr/local/bin/google-chrome-stable
+cp -f /usr/local/bin/google-chrome-stable /usr/local/bin/google-chrome
+
+sed -i 's|^Exec=.*|Exec=/usr/local/bin/google-chrome-stable %U|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
+
 # Configurar orden exacto del dock en /etc/lingmo-dock-list.conf
 mkdir -p /etc /etc/skel/.config/lingmoos /etc/skel/.config/cutefishos
 if [ -f "/tmp/lingmo-dock/lingmo-dock-list.conf" ]; then
@@ -151,7 +183,14 @@ fi
 XSESSION_TAP
 chmod +x /etc/X11/Xsession.d/90touchpad-tap
 
-echo "=== [8/9] Compilando daemon nativo en C para tecla Windows (Super Key Launcher) ==="
+echo "=== [8/9] Compilando daemon nativo en C para tecla Windows (Super Key) y teclas multimedia/brillo ==="
+apt-get install -y --no-install-recommends \
+  brightnessctl pulseaudio-utils xbacklight playerctl alsa-utils acpid libxtst-dev libx11-dev || true
+
+chmod 4755 /usr/bin/brightnessctl 2>/dev/null || true
+usermod -aG audio,video,input lingmo 2>/dev/null || true
+usermod -aG audio,video,input live 2>/dev/null || true
+
 cat << 'SUPERKEY_C' > /tmp/superkey-launcher.c
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,11 +203,64 @@ cat << 'SUPERKEY_C' > /tmp/superkey-launcher.c
 #include <X11/keysym.h>
 #include <X11/extensions/record.h>
 
+#ifndef XF86XK_MonBrightnessUp
+#define XF86XK_MonBrightnessUp   0x1008FF02
+#endif
+#ifndef XF86XK_MonBrightnessDown
+#define XF86XK_MonBrightnessDown 0x1008FF03
+#endif
+#ifndef XF86XK_AudioLowerVolume
+#define XF86XK_AudioLowerVolume  0x1008FF11
+#endif
+#ifndef XF86XK_AudioMute
+#define XF86XK_AudioMute         0x1008FF12
+#endif
+#ifndef XF86XK_AudioRaiseVolume
+#define XF86XK_AudioRaiseVolume  0x1008FF13
+#endif
+#ifndef XF86XK_AudioPlay
+#define XF86XK_AudioPlay         0x1008FF14
+#endif
+#ifndef XF86XK_AudioStop
+#define XF86XK_AudioStop         0x1008FF15
+#endif
+#ifndef XF86XK_AudioPrev
+#define XF86XK_AudioPrev         0x1008FF16
+#endif
+#ifndef XF86XK_AudioNext
+#define XF86XK_AudioNext         0x1008FF17
+#endif
+#ifndef XF86XK_AudioMicMute
+#define XF86XK_AudioMicMute      0x1008FFB2
+#endif
+
 static int super_pressed = 0;
 static int other_key_pressed = 0;
 static KeyCode code_super_l = 133;
 static KeyCode code_super_r = 134;
+
+static KeyCode code_vol_up = 123;
+static KeyCode code_vol_down = 122;
+static KeyCode code_vol_mute = 121;
+static KeyCode code_mic_mute = 198;
+static KeyCode code_bright_up = 233;
+static KeyCode code_bright_down = 232;
+static KeyCode code_play = 172;
+static KeyCode code_next = 171;
+static KeyCode code_prev = 173;
+
 static struct timeval last_trigger = {0, 0};
+static struct timeval last_vol = {0, 0};
+static struct timeval last_bright = {0, 0};
+
+static void run_async(const char *cmd) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(0);
+    }
+}
 
 void callback(XPointer closure, XRecordInterceptData *data) {
     if (data->category == XRecordFromServer) {
@@ -176,6 +268,7 @@ void callback(XPointer closure, XRecordInterceptData *data) {
         int type = b[0] & 0x7F;
         int keycode = b[1];
 
+        // 1. Super Key logic (abrir lanzador en KeyRelease)
         if (keycode == 133 || keycode == 134 || keycode == code_super_l || keycode == code_super_r) {
             if (type == KeyPress) {
                 super_pressed = 1;
@@ -186,23 +279,66 @@ void callback(XPointer closure, XRecordInterceptData *data) {
                     gettimeofday(&now, NULL);
                     long elapsed_ms = (now.tv_sec - last_trigger.tv_sec) * 1000 + (now.tv_usec - last_trigger.tv_usec) / 1000;
                     
-                    // Debounce de 380ms para evitar dobles conmutaciones
                     if (elapsed_ms > 380) {
                         last_trigger = now;
-                        pid_t pid = fork();
-                        if (pid == 0) {
-                            setsid();
-                            system("sh -c 'which lingmo-launcher >/dev/null 2>&1 && lingmo-launcher || which cutefish-launcher >/dev/null 2>&1 && cutefish-launcher' >/dev/null 2>&1 &");
-                            exit(0);
-                        }
+                        run_async("which lingmo-launcher >/dev/null 2>&1 && lingmo-launcher || which cutefish-launcher >/dev/null 2>&1 && cutefish-launcher");
                     }
                 }
                 super_pressed = 0;
                 other_key_pressed = 0;
             }
-        } else {
-            if (type == KeyPress && super_pressed) {
+            XRecordFreeData(data);
+            return;
+        }
+
+        // 2. Teclas multimedia y brillo (reaccionar en KeyPress de forma inmediata)
+        if (type == KeyPress) {
+            if (super_pressed) {
                 other_key_pressed = 1;
+            }
+
+            if (keycode == code_vol_up) {
+                struct timeval now;
+                gettimeofday(&now, NULL);
+                long elapsed = (now.tv_sec - last_vol.tv_sec) * 1000 + (now.tv_usec - last_vol.tv_usec) / 1000;
+                if (elapsed > 40) {
+                    last_vol = now;
+                    run_async("pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || amixer set Master 5%+ 2>/dev/null");
+                }
+            } else if (keycode == code_vol_down) {
+                struct timeval now;
+                gettimeofday(&now, NULL);
+                long elapsed = (now.tv_sec - last_vol.tv_sec) * 1000 + (now.tv_usec - last_vol.tv_usec) / 1000;
+                if (elapsed > 40) {
+                    last_vol = now;
+                    run_async("pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || amixer set Master 5%- 2>/dev/null");
+                }
+            } else if (keycode == code_vol_mute) {
+                run_async("pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || amixer set Master toggle 2>/dev/null");
+            } else if (keycode == code_mic_mute) {
+                run_async("pactl set-source-mute @DEFAULT_SOURCE@ toggle 2>/dev/null || amixer set Capture toggle 2>/dev/null");
+            } else if (keycode == code_bright_up) {
+                struct timeval now;
+                gettimeofday(&now, NULL);
+                long elapsed = (now.tv_sec - last_bright.tv_sec) * 1000 + (now.tv_usec - last_bright.tv_usec) / 1000;
+                if (elapsed > 40) {
+                    last_bright = now;
+                    run_async("brightnessctl set +5% >/dev/null 2>&1 || xbacklight -inc 5 >/dev/null 2>&1");
+                }
+            } else if (keycode == code_bright_down) {
+                struct timeval now;
+                gettimeofday(&now, NULL);
+                long elapsed = (now.tv_sec - last_bright.tv_sec) * 1000 + (now.tv_usec - last_bright.tv_usec) / 1000;
+                if (elapsed > 40) {
+                    last_bright = now;
+                    run_async("brightnessctl set 5%- >/dev/null 2>&1 || xbacklight -dec 5 >/dev/null 2>&1");
+                }
+            } else if (keycode == code_play) {
+                run_async("playerctl play-pause 2>/dev/null");
+            } else if (keycode == code_next) {
+                run_async("playerctl next 2>/dev/null");
+            } else if (keycode == code_prev) {
+                run_async("playerctl previous 2>/dev/null");
             }
         }
     }
@@ -233,10 +369,18 @@ int main() {
         return 1;
     }
 
-    KeyCode kl = XKeysymToKeycode(ctrl_dpy, XK_Super_L);
-    KeyCode kr = XKeysymToKeycode(ctrl_dpy, XK_Super_R);
-    if (kl != 0) code_super_l = kl;
-    if (kr != 0) code_super_r = kr;
+    KeyCode k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XK_Super_L)) != 0) code_super_l = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XK_Super_R)) != 0) code_super_r = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioRaiseVolume)) != 0) code_vol_up = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioLowerVolume)) != 0) code_vol_down = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioMute)) != 0) code_vol_mute = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioMicMute)) != 0) code_mic_mute = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_MonBrightnessUp)) != 0) code_bright_up = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_MonBrightnessDown)) != 0) code_bright_down = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioPlay)) != 0) code_play = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioNext)) != 0) code_next = k;
+    if ((k = XKeysymToKeycode(ctrl_dpy, XF86XK_AudioPrev)) != 0) code_prev = k;
 
     XRecordRange *range = XRecordAllocRange();
     range->device_events.first = KeyPress;
@@ -260,7 +404,7 @@ mkdir -p /etc/xdg/autostart
 cat << 'SUPERKEY_AUTOSTART' > /etc/xdg/autostart/superkey-launcher.desktop
 [Desktop Entry]
 Type=Application
-Name=Super Key Launcher Daemon
+Name=Super Key and Media Keys Daemon
 Exec=/usr/bin/superkey-launcher
 Hidden=false
 NoDisplay=true
@@ -485,9 +629,8 @@ done
 # 10. Pre-integrar repositorio local y APT Pinning para que 'apt-get install spotify-client' funcione directamente
 mkdir -p /var/lib/lingmo-repo
 cd /var/lib/lingmo-repo
-SPOTIFY_PKG="spotify-client_1.2.74.477.g00424584_amd64.deb"
-wget -q -O "$SPOTIFY_PKG" "https://archive.org/download/spotify-client-1.2.74.477/$SPOTIFY_PKG" || \
-wget -q -O "$SPOTIFY_PKG" "https://raw.githubusercontent.com/hetzelltellez/lingmo-os-cutefish/master/$SPOTIFY_PKG" || true
+SPOTIFY_PKG="spotify-client_1.2.74.477_amd64.deb"
+wget -q -c -O "$SPOTIFY_PKG" "https://download.spotify.com/spotify-client_1.2.74.477_amd64.deb" || true
 
 if [ -f "$SPOTIFY_PKG" ] && [ -s "$SPOTIFY_PKG" ]; then
     dpkg-scanpackages . /dev/null 2>/dev/null | gzip -9c > Packages.gz || true
@@ -495,11 +638,19 @@ if [ -f "$SPOTIFY_PKG" ] && [ -s "$SPOTIFY_PKG" ]; then
     mkdir -p /etc/apt/preferences.d
     cat << 'SPOTIFY_PIN' > /etc/apt/preferences.d/spotify
 Package: spotify-client
-Pin: version 1:1.2.74*
+Pin: origin ""
+Pin-Priority: 1001
+
+Package: spotify-client
+Pin: version *1.2.74*
 Pin-Priority: 1001
 SPOTIFY_PIN
 fi
 cd /
+
+# Dependencias runtime necesarias para que 'apt-get install spotify-client' funcione al instante sin demoras
+apt-get install -y --no-install-recommends \
+  libasound2 libatomic1 libcurl4 libgtk-3-0 libnss3 libx11-xcb1 libxss1 libxtst6 || true
 
 cat << 'SPOTIFY_SH' > /usr/local/bin/instalar-spotify
 #!/bin/bash
@@ -507,15 +658,51 @@ set -e
 echo "=========================================================="
 echo "    Instalador Oficial de Spotify (.deb para Debian 12)   "
 echo "=========================================================="
-if [ -f "/var/lib/lingmo-repo/spotify-client_1.2.74.477.g00424584_amd64.deb" ]; then
-    apt-get install -y /var/lib/lingmo-repo/spotify-client_1.2.74.477.g00424584_amd64.deb || true
+if [ -f "/var/lib/lingmo-repo/spotify-client_1.2.74.477_amd64.deb" ]; then
+    apt-get install -y /var/lib/lingmo-repo/spotify-client_1.2.74.477_amd64.deb || true
 else
     apt-get update && apt-get install -y spotify-client || true
 fi
-apt-mark hold spotify-client 2>/dev/null || true
-echo "Listo! Spotify instalado."
+echo "Listo! Spotify instalado con éxito."
 SPOTIFY_SH
 chmod +x /usr/local/bin/instalar-spotify
+
+# 11. Habilitar y configurar completamente Flatpak (con Flathub) y Snapd
+echo "=== [11/11] Configurando Flatpak (con Flathub) y Snapd ==="
+apt-get install -y --no-install-recommends \
+  flatpak xdg-desktop-portal xdg-desktop-portal-gtk snapd squashfuse fuse || true
+
+# Configurar repositorio oficial Flathub por defecto en Flatpak
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+
+# Configurar Snapd y enlaces de compatibilidad
+mkdir -p /snap /var/lib/snapd/snap /var/lib/snapd/desktop
+ln -sf /var/lib/snapd/snap /snap 2>/dev/null || true
+systemctl enable snapd.service 2>/dev/null || true
+systemctl enable snapd.socket 2>/dev/null || true
+systemctl enable snapd.apparmor.service 2>/dev/null || true
+
+# Variables de entorno globales para PATH y menus de escritorio (XDG)
+mkdir -p /etc/profile.d
+cat << 'APPS_PATH_SH' > /etc/profile.d/apps-path.sh
+# Exportar ejecutables de Snap y Flatpak en PATH
+case ":$PATH:" in
+  *":/snap/bin:"*) ;;
+  *) export PATH="$PATH:/snap/bin" ;;
+esac
+case ":$PATH:" in
+  *":/var/lib/flatpak/exports/bin:"*) ;;
+  *) export PATH="$PATH:/var/lib/flatpak/exports/bin" ;;
+esac
+case ":$PATH:" in
+  *":$HOME/.local/share/flatpak/exports/bin:"*) ;;
+  *) export PATH="$PATH:$HOME/.local/share/flatpak/exports/bin" ;;
+esac
+
+# Exportar lanzadores .desktop de Flatpak y Snap para Lingmo Launcher y menú
+export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
+APPS_PATH_SH
+chmod 644 /etc/profile.d/apps-path.sh
 
 rm -rf /tmp/lingmo-statusbar /tmp/lingmo-settings
 apt-get clean

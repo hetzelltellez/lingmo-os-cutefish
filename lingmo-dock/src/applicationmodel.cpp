@@ -206,8 +206,15 @@ bool ApplicationModel::openNewInstance(const QString &appId)
         QString exec = args.first();
         args.removeFirst();
 
-        if (!args.isEmpty()) {
-            ProcessProvider::startDetached(exec, args);
+        QStringList cleanArgs;
+        for (const QString &arg : args) {
+            if (arg.startsWith('%'))
+                continue;
+            cleanArgs.append(arg);
+        }
+
+        if (!cleanArgs.isEmpty()) {
+            ProcessProvider::startDetached(exec, cleanArgs);
         } else {
             ProcessProvider::startDetached(exec);
         }
