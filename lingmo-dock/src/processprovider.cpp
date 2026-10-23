@@ -31,18 +31,33 @@ ProcessProvider::ProcessProvider(QObject *parent)
 
 bool ProcessProvider::startDetached(const QString &exec, QStringList args)
 {
-    QDBusInterface iface("com.lingmo.Session",
-                         "/Session",
-                         "com.lingmo.Session", QDBusConnection::sessionBus());
+    // 1. Intentar via DBus com.lingmo.Session
+    QDBusInterface ifaceLingmo("com.lingmo.Session",
+                               "/Session",
+                               "com.lingmo.Session", QDBusConnection::sessionBus());
 
-    if (iface.isValid()) {
-        QDBusPendingReply<> reply = iface.asyncCall("launch", exec, args);
+    if (ifaceLingmo.isValid()) {
+        QDBusPendingReply<> reply = ifaceLingmo.asyncCall("launch", exec, args);
         reply.waitForFinished();
         if (!reply.isError()) {
             return true;
         }
     }
 
+    // 2. Intentar via DBus com.cutefish.Session
+    QDBusInterface ifaceCute("com.cutefish.Session",
+                             "/Session",
+                             "com.cutefish.Session", QDBusConnection::sessionBus());
+
+    if (ifaceCute.isValid()) {
+        QDBusPendingReply<> reply = ifaceCute.asyncCall("launch", exec, args);
+        reply.waitForFinished();
+        if (!reply.isError()) {
+            return true;
+        }
+    }
+
+    // 3. Fallback infalible directo via QProcess
     if (!args.isEmpty()) {
         return QProcess::startDetached(exec, args);
     }

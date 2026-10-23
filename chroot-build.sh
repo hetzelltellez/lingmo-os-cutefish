@@ -61,18 +61,33 @@ fi
 
 # Blindar ejecucion de Google Chrome en modo Live
 chmod 4755 /opt/google/chrome/chrome-sandbox 2>/dev/null || true
+chmod 755 /opt/google/chrome/google-chrome /opt/google/chrome/chrome 2>/dev/null || true
 mkdir -p /etc/sysctl.d
 echo "kernel.unprivileged_userns_clone=1" > /etc/sysctl.d/00-local-userns.conf
 
+# 1. Configurar /etc/default/google-chrome
+mkdir -p /etc/default
+cat << 'CHROME_DEFAULT' > /etc/default/google-chrome
+export CHROME_EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
+CHROME_DEFAULT
+
+# 2. Inyectar banderas sandbox en el script oficial de Google Chrome (/opt/google/chrome/google-chrome)
+if [ -f "/opt/google/chrome/google-chrome" ]; then
+    sed -i 's|exec -a "\$0" "\$HERE/chrome"|exec -a "\$0" "\$HERE/chrome" --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /opt/google/chrome/google-chrome 2>/dev/null || true
+fi
+
+# 3. Crear wrapper indestructible en /usr/local/bin y /usr/bin
 cat << 'CHROME_WRAPPER' > /usr/local/bin/google-chrome-stable
 #!/bin/bash
+export CHROME_EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
+
 REAL_CHROME=""
-if [ -x "/opt/google/chrome/chrome" ]; then
-    REAL_CHROME="/opt/google/chrome/chrome"
-elif [ -x "/opt/google/chrome/google-chrome" ]; then
+if [ -x "/opt/google/chrome/google-chrome" ]; then
     REAL_CHROME="/opt/google/chrome/google-chrome"
-elif [ -x "/usr/bin/google-chrome" ]; then
-    REAL_CHROME="/usr/bin/google-chrome"
+elif [ -x "/usr/bin/google-chrome-stable" ] && [ "/usr/bin/google-chrome-stable" != "$0" ]; then
+    REAL_CHROME="/usr/bin/google-chrome-stable"
+elif [ -x "/opt/google/chrome/chrome" ]; then
+    REAL_CHROME="/opt/google/chrome/chrome"
 fi
 
 CLEAN_ARGS=()
@@ -82,8 +97,6 @@ for a in "$@"; do
     fi
 done
 
-# En modo Live sobre overlayfs sin soporte suid, Chrome requiere --no-sandbox
-# --test-type elimina el banner amarillo de advertencia de Chromium
 EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
 
 exec "$REAL_CHROME" $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
@@ -94,7 +107,9 @@ cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome-stable
 cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome
 cp -f /usr/local/bin/google-chrome-stable /usr/bin/x-www-browser 2>/dev/null || true
 
-sed -i 's|^Exec=.*|Exec=/usr/bin/google-chrome-stable %U|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
+# 4. Actualizar google-chrome.desktop
+sed -i 's|^Exec=/usr/bin/google-chrome-stable.*|Exec=/usr/bin/google-chrome-stable %U --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
+sed -i 's|^Exec=google-chrome.*|Exec=/usr/bin/google-chrome-stable %U --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
 
 # Configurar orden exacto del dock en /etc/lingmo-dock-list.conf
 mkdir -p /etc /etc/skel/.config/lingmoos /etc/skel/.config/cutefishos
@@ -188,9 +203,9 @@ fi
 XSESSION_TAP
 chmod +x /etc/X11/Xsession.d/90touchpad-tap
 
-echo "=== [8/9] Compilando daemon nativo en C para tecla Windows (Super Key) y teclas multimedia/brillo ==="
+echo "=== [8/9] Configurando daemon SXHKD y utilidades para teclas multimedia, brillo y Super Key ==="
 apt-get install -y --no-install-recommends \
-  brightnessctl pulseaudio-utils xbacklight playerctl alsa-utils acpid libxtst-dev libx11-dev || true
+  brightnessctl pulseaudio-utils xbacklight playerctl alsa-utils acpid libxtst-dev libx11-dev sxhkd inotify-tools || true
 
 chmod 4755 /usr/bin/brightnessctl 2>/dev/null || true
 usermod -aG audio,video,input lingmo 2>/dev/null || true
@@ -199,35 +214,166 @@ usermod -aG audio,video,input live 2>/dev/null || true
 # Reglas udev para permitir ajuste directo de brillo de pantalla en cualquier GPU
 mkdir -p /etc/udev/rules.d
 cat << 'UDEV_BACKLIGHT' > /etc/udev/rules.d/90-backlight.rules
-ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chmod a+rw /sys/class/backlight/%k/brightness"
-SUBSYSTEM=="backlight", ACTION=="change", RUN+="/bin/chmod a+rw /sys/class/backlight/%k/brightness"
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chmod 0666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"
+SUBSYSTEM=="backlight", ACTION=="change", RUN+="/bin/chmod 0666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"
+ACTION=="add", SUBSYSTEM=="leds", RUN+="/bin/chmod 0666 /sys/class/leds/%k/brightness"
 UDEV_BACKLIGHT
+
+# Script unificado de control de volumen (WirePlumber / PipeWire, PulseAudio y ALSA)
+cat << 'LINGMO_VOL_SH' > /usr/local/bin/lingmo-volume
+#!/bin/bash
+ACTION="$1"
+case "$ACTION" in
+    up)
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0 2>/dev/null || \
+        pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || \
+        pactl set-sink-volume 0 +5% 2>/dev/null || \
+        amixer -D pulse set Master 5%+ 2>/dev/null || amixer set Master 5%+ 2>/dev/null
+        ;;
+    down)
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || \
+        pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || \
+        pactl set-sink-volume 0 -5% 2>/dev/null || \
+        amixer -D pulse set Master 5%- 2>/dev/null || amixer set Master 5%- 2>/dev/null
+        ;;
+    mute)
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || \
+        pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || \
+        pactl set-sink-mute 0 toggle 2>/dev/null || \
+        amixer -D pulse set Master toggle 2>/dev/null || amixer set Master toggle 2>/dev/null
+        ;;
+    micmute)
+        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle 2>/dev/null || \
+        pactl set-source-mute @DEFAULT_SOURCE@ toggle 2>/dev/null || \
+        pactl set-source-mute 0 toggle 2>/dev/null || \
+        amixer set Capture toggle 2>/dev/null
+        ;;
+esac
+LINGMO_VOL_SH
+chmod 755 /usr/local/bin/lingmo-volume
+
+# Script unificado de control de brillo para cualquier hardware (Lenovo, Intel, AMD, etc.)
+cat << 'LINGMO_BRIGHT_SH' > /usr/local/bin/lingmo-brightness
+#!/bin/bash
+ACTION="$1"
+STEP=5
+
+if which brightnessctl >/dev/null 2>&1; then
+    if [ "$ACTION" = "up" ]; then
+        brightnessctl set +5% >/dev/null 2>&1 && exit 0
+    else
+        brightnessctl set 5%- >/dev/null 2>&1 && exit 0
+    fi
+fi
+
+for bdir in /sys/class/backlight/*; do
+    if [ -d "$bdir" ]; then
+        cur=$(cat "$bdir/brightness" 2>/dev/null)
+        max=$(cat "$bdir/max_brightness" 2>/dev/null)
+        if [ -n "$cur" ] && [ -n "$max" ] && [ "$max" -gt 0 ]; then
+            delta=$(( max * STEP / 100 ))
+            [ $delta -lt 1 ] && delta=1
+            if [ "$ACTION" = "up" ]; then
+                new_val=$(( cur + delta ))
+                [ $new_val -gt $max ] && new_val=$max
+            else
+                new_val=$(( cur - delta ))
+                [ $new_val -lt 1 ] && new_val=1
+            fi
+            echo "$new_val" > "$bdir/brightness" 2>/dev/null && exit 0
+        fi
+    fi
+done
+
+if [ "$ACTION" = "up" ]; then
+    xbacklight -inc 5 >/dev/null 2>&1 || true
+else
+    xbacklight -dec 5 >/dev/null 2>&1 || true
+fi
+LINGMO_BRIGHT_SH
+chmod 755 /usr/local/bin/lingmo-brightness
+
+# Configuracion de sxhkd (Simple X Hotkey Daemon para captura global de teclas multimedia)
+mkdir -p /etc/sxhkd
+cat << 'SXHKD_CONF' > /etc/sxhkd/sxhkdrc
+# Brightness Up
+XF86MonBrightnessUp
+    /usr/local/bin/lingmo-brightness up
+
+# Brightness Down
+XF86MonBrightnessDown
+    /usr/local/bin/lingmo-brightness down
+
+# Volume Up
+XF86AudioRaiseVolume
+    /usr/local/bin/lingmo-volume up
+
+# Volume Down
+XF86AudioLowerVolume
+    /usr/local/bin/lingmo-volume down
+
+# Volume Mute Toggle
+XF86AudioMute
+    /usr/local/bin/lingmo-volume mute
+
+# Mic Mute Toggle
+XF86AudioMicMute
+    /usr/local/bin/lingmo-volume micmute
+
+# Media playback
+XF86AudioPlay
+    playerctl play-pause 2>/dev/null
+
+XF86AudioNext
+    playerctl next 2>/dev/null
+
+XF86AudioPrev
+    playerctl previous 2>/dev/null
+SXHKD_CONF
+
+# Autostart sxhkd
+mkdir -p /etc/xdg/autostart /etc/X11/Xsession.d
+cat << 'SXHKD_DESKTOP' > /etc/xdg/autostart/sxhkd.desktop
+[Desktop Entry]
+Type=Application
+Name=SXHKD Media and Brightness Keys Daemon
+Exec=/usr/bin/sxhkd -c /etc/sxhkd/sxhkdrc
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+SXHKD_DESKTOP
+chmod 644 /etc/xdg/autostart/sxhkd.desktop
+
+cat << 'SXHKD_XSESSION' > /etc/X11/Xsession.d/91sxhkd
+/usr/bin/sxhkd -c /etc/sxhkd/sxhkdrc >/dev/null 2>&1 &
+SXHKD_XSESSION
+chmod +x /etc/X11/Xsession.d/91sxhkd
 
 # Handlers ACPI para hardware laptop (Lenovo/Asus/HP/Dell)
 mkdir -p /etc/acpi/events
 cat << 'ACPI_BRIGHT_UP' > /etc/acpi/events/brightness-up
 event=video/brightnessup.*
-action=/usr/bin/brightnessctl set +5% >/dev/null 2>&1 || xbacklight -inc 5 >/dev/null 2>&1
+action=/usr/local/bin/lingmo-brightness up
 ACPI_BRIGHT_UP
 
 cat << 'ACPI_BRIGHT_DOWN' > /etc/acpi/events/brightness-down
 event=video/brightnessdown.*
-action=/usr/bin/brightnessctl set 5%- >/dev/null 2>&1 || xbacklight -dec 5 >/dev/null 2>&1
+action=/usr/local/bin/lingmo-brightness down
 ACPI_BRIGHT_DOWN
 
 cat << 'ACPI_VOL_UP' > /etc/acpi/events/volume-up
 event=button/volumeup.*
-action=/usr/bin/pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; /usr/bin/pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || pactl set-sink-volume 0 +5% 2>/dev/null || amixer set Master 5%+ 2>/dev/null
+action=/usr/local/bin/lingmo-volume up
 ACPI_VOL_UP
 
 cat << 'ACPI_VOL_DOWN' > /etc/acpi/events/volume-down
 event=button/volumedown.*
-action=/usr/bin/pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || pactl set-sink-volume 0 -5% 2>/dev/null || amixer set Master 5%- 2>/dev/null
+action=/usr/local/bin/lingmo-volume down
 ACPI_VOL_DOWN
 
 cat << 'ACPI_VOL_MUTE' > /etc/acpi/events/volume-mute
 event=button/mute.*
-action=/usr/bin/pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || pactl set-sink-mute 0 toggle 2>/dev/null || amixer set Master toggle 2>/dev/null
+action=/usr/local/bin/lingmo-volume mute
 ACPI_VOL_MUTE
 
 systemctl enable acpid 2>/dev/null || true
@@ -720,16 +866,16 @@ echo "Listo! Spotify instalado con éxito."
 SPOTIFY_SH
 chmod +x /usr/local/bin/instalar-spotify
 
-# 11. Habilitar y configurar completamente Flatpak (con Flathub) y Snapd
-echo "=== [11/11] Configurando Flatpak (con Flathub) y Snapd ==="
+# 11. Habilitar y configurar completamente Flatpak (con Flathub), Snapd y Auto-Sync Daemon
+echo "=== [11/11] Configurando Flatpak (con Flathub), Snapd y Auto-Sync Daemon ==="
 apt-get install -y --no-install-recommends flatpak xdg-desktop-portal xdg-desktop-portal-gtk || true
-apt-get install -y --no-install-recommends snapd squashfuse fuse3 libfuse2 apparmor || true
+apt-get install -y --no-install-recommends snapd squashfuse fuse3 libfuse2 apparmor inotify-tools || true
 
 # Configurar repositorio oficial Flathub por defecto en Flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
 
 # Configurar Snapd y enlaces de compatibilidad
-mkdir -p /snap /var/lib/snapd/snap /var/lib/snapd/desktop
+mkdir -p /snap /var/lib/snapd/snap /var/lib/snapd/desktop /var/lib/snapd/desktop/applications /var/lib/flatpak/exports/share/applications
 ln -sf /var/lib/snapd/snap /snap 2>/dev/null || true
 systemctl enable snapd.service 2>/dev/null || true
 systemctl enable snapd.socket 2>/dev/null || true
@@ -769,6 +915,153 @@ esac
 export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
 APPS_PATH_SH
 chmod 644 /etc/profile.d/apps-path.sh
+
+# Fallback command_not_found_handle en /etc/bash.bashrc para ejecutar aplicaciones Flatpak por su nombre comun en terminal
+cat << 'CMD_NOT_FOUND' >> /etc/bash.bashrc
+
+# Soporte automatico de comandos Flatpak por nombre corto
+command_not_found_handle() {
+    local cmd="$1"
+    if which flatpak >/dev/null 2>&1; then
+        local app=$(flatpak list --app --columns=application 2>/dev/null | grep -iE "\.${cmd}$|_${cmd}$|^${cmd}$" | head -n 1)
+        if [ -n "$app" ]; then
+            shift
+            exec flatpak run "$app" "$@"
+        fi
+    fi
+    echo "bash: $cmd: no se reconoce este comando o no fue encontrado" >&2
+    return 127
+}
+CMD_NOT_FOUND
+
+# Daemon automatico de sincronizacion lingmo-app-sync
+cat << 'APP_SYNC_SH' > /usr/local/bin/lingmo-app-sync
+#!/bin/bash
+# Lingmo OS Auto-Sync para aplicaciones Snap, Flatpak y atajos de escritorio
+sync_apps() {
+    mkdir -p /usr/share/applications /usr/share/icons/hicolor /usr/share/pixmaps
+
+    # 1. Sincronizar aplicaciones Snap
+    if [ -d "/var/lib/snapd/desktop/applications" ]; then
+        for f in /var/lib/snapd/desktop/applications/*.desktop; do
+            if [ -f "$f" ]; then
+                base=$(basename "$f")
+                target="/usr/share/applications/$base"
+                if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
+                    ln -sf "$f" "$target" 2>/dev/null || cp -f "$f" "$target" 2>/dev/null
+                fi
+            fi
+        done
+    fi
+
+    # 2. Sincronizar aplicaciones Flatpak del sistema y de usuarios
+    FLATPAK_DIRS=(
+        "/var/lib/flatpak/exports/share/applications"
+    )
+    for u_home in /home/* /root; do
+        if [ -d "$u_home/.local/share/flatpak/exports/share/applications" ]; then
+            FLATPAK_DIRS+=("$u_home/.local/share/flatpak/exports/share/applications")
+        fi
+    done
+
+    for fdir in "${FLATPAK_DIRS[@]}"; do
+        if [ -d "$fdir" ]; then
+            for f in "$fdir"/*.desktop; do
+                if [ -f "$f" ]; then
+                    base=$(basename "$f")
+                    target="/usr/share/applications/$base"
+                    if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
+                        ln -sf "$f" "$target" 2>/dev/null || cp -f "$f" "$target" 2>/dev/null
+                    fi
+
+                    # Crear comandos ejecutables en /usr/local/bin (ej. 'firefox', 'gimp')
+                    app_id=$(basename "$f" .desktop)
+                    short_name=$(echo "$app_id" | awk -F. '{print $NF}' | tr '[:upper:]' '[:lower:]')
+                    
+                    aliases=("$app_id")
+                    [ -n "$short_name" ] && [ "$short_name" != "$app_id" ] && aliases+=("$short_name")
+                    
+                    case "$app_id" in
+                        *firefox*|*Firefox*) aliases+=("firefox") ;;
+                        *gimp*|*GIMP*) aliases+=("gimp") ;;
+                        *vlc*|*VLC*) aliases+=("vlc") ;;
+                        *spotify*|*Spotify*) aliases+=("spotify") ;;
+                        *telegram*|*Telegram*) aliases+=("telegram" "telegram-desktop") ;;
+                        *chrome*|*Chrome*) aliases+=("google-chrome") ;;
+                    esac
+
+                    for cmd in "${aliases[@]}"; do
+                        wrap="/usr/local/bin/$cmd"
+                        if [ ! -e "$wrap" ] || [ -L "$wrap" ]; then
+                            cat << EOF_CLI > "$wrap"
+#!/bin/sh
+if which flatpak >/dev/null 2>&1 && flatpak info "$app_id" >/dev/null 2>&1; then
+    exec flatpak run "$app_id" "\$@"
+elif [ -x "/var/lib/flatpak/exports/bin/$app_id" ]; then
+    exec "/var/lib/flatpak/exports/bin/$app_id" "\$@"
+fi
+EOF_CLI
+                            chmod 755 "$wrap" 2>/dev/null || true
+                        fi
+                    done
+                fi
+            done
+        fi
+    done
+
+    # 3. Sincronizar iconos
+    if [ -d "/var/lib/flatpak/exports/share/icons" ]; then
+        cp -rsf /var/lib/flatpak/exports/share/icons/* /usr/share/icons/ 2>/dev/null || true
+    fi
+    if [ -d "/var/lib/snapd/desktop/icons" ]; then
+        cp -rsf /var/lib/snapd/desktop/icons/* /usr/share/icons/hicolor/ 2>/dev/null || true
+        cp -sf /var/lib/snapd/desktop/icons/* /usr/share/pixmaps/ 2>/dev/null || true
+    fi
+}
+
+sync_apps
+
+while true; do
+    if which inotifywait >/dev/null 2>&1; then
+        inotifywait -r -q -t 5 -e create,delete,modify,attrib,moved_to /var/lib/flatpak/exports/share /var/lib/snapd/desktop /home/*/.local/share 2>/dev/null
+    else
+        sleep 4
+    fi
+    sync_apps
+done
+APP_SYNC_SH
+chmod 755 /usr/local/bin/lingmo-app-sync
+
+# Servicio Systemd para lingmo-app-sync
+mkdir -p /etc/systemd/system
+cat << 'APP_SYNC_SERVICE' > /etc/systemd/system/lingmo-app-sync.service
+[Unit]
+Description=Lingmo OS Application and Icon Auto-Sync Daemon
+After=snapd.service
+Wants=snapd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lingmo-app-sync
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+APP_SYNC_SERVICE
+systemctl enable lingmo-app-sync.service 2>/dev/null || true
+
+# Autostart Xsession para lingmo-app-sync
+cat << 'APP_SYNC_XSESSION' > /etc/X11/Xsession.d/93lingmo-app-sync
+/usr/local/bin/lingmo-app-sync >/dev/null 2>&1 &
+APP_SYNC_XSESSION
+chmod +x /etc/X11/Xsession.d/93lingmo-app-sync
+
+# Asegurar permisos correctos de usuario
+chown -R 1000:1000 /home/* /etc/skel 2>/dev/null || true
+chmod -R 755 /home/* /etc/skel 2>/dev/null || true
+chmod -R a+rwX /tmp /var/tmp 2>/dev/null || true
+chmod -R a+rw /sys/class/backlight/ 2>/dev/null || true
 
 rm -rf /tmp/lingmo-statusbar /tmp/lingmo-settings
 apt-get clean

@@ -24,8 +24,20 @@
 #include <QDirIterator>
 #include <QSettings>
 #include <QLocale>
+#include <QDir>
+#include <QStandardPaths>
 
-#define SystemApplicationsFolder "/usr/share/applications"
+static const QStringList appSearchFolders()
+{
+    QStringList folders;
+    folders << "/usr/share/applications"
+            << "/usr/local/share/applications"
+            << "/var/lib/flatpak/exports/share/applications"
+            << "/var/lib/snapd/desktop/applications"
+            << QDir::homePath() + "/.local/share/applications"
+            << QDir::homePath() + "/.local/share/flatpak/exports/share/applications";
+    return folders;
+}
 
 static SystemAppMonitor *SELF = nullptr;
 
@@ -51,7 +63,11 @@ SystemAppMonitor::SystemAppMonitor(QObject *parent)
     : QObject(parent)
 {
     QFileSystemWatcher *watcher = new QFileSystemWatcher(this);
-    watcher->addPath(SystemApplicationsFolder);
+    for (const QString &folder : appSearchFolders()) {
+        if (QDir(folder).exists()) {
+            watcher->addPath(folder);
+        }
+    }
     connect(watcher, &QFileSystemWatcher::directoryChanged, this, &SystemAppMonitor::refresh);
     refresh();
 }
@@ -78,15 +94,16 @@ void SystemAppMonitor::refresh()
         addedEntries.append(item->path);
 
     QStringList allEntries;
-    QDirIterator it(SystemApplicationsFolder, { "*.desktop" }, QDir::NoFilter, QDirIterator::Subdirectories);
-
-    while (it.hasNext()) {
-        const QString &filePath = it.next();
-
-        if (!QFile::exists(filePath))
+    for (const QString &folder : appSearchFolders()) {
+        if (!QDir(folder).exists())
             continue;
-
-        allEntries.append(filePath);
+        QDirIterator it(folder, { "*.desktop" }, QDir::NoFilter, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString &filePath = it.next();
+            if (!QFile::exists(filePath))
+                continue;
+            allEntries.append(filePath);
+        }
     }
 
     for (const QString &filePath : allEntries) {
