@@ -66,8 +66,12 @@ echo "kernel.unprivileged_userns_clone=1" > /etc/sysctl.d/00-local-userns.conf
 
 cat << 'CHROME_WRAPPER' > /usr/local/bin/google-chrome-stable
 #!/bin/bash
-REAL_CHROME="/opt/google/chrome/google-chrome"
-if [ ! -x "$REAL_CHROME" ]; then
+REAL_CHROME=""
+if [ -x "/opt/google/chrome/chrome" ]; then
+    REAL_CHROME="/opt/google/chrome/chrome"
+elif [ -x "/opt/google/chrome/google-chrome" ]; then
+    REAL_CHROME="/opt/google/chrome/google-chrome"
+elif [ -x "/usr/bin/google-chrome" ]; then
     REAL_CHROME="/usr/bin/google-chrome"
 fi
 
@@ -78,18 +82,19 @@ for a in "$@"; do
     fi
 done
 
-EXTRA_FLAGS="--disable-dev-shm-usage --password-store=basic --no-default-browser-check --no-first-run"
-
-if [ "$(id -u)" -eq 0 ]; then
-    EXTRA_FLAGS="$EXTRA_FLAGS --no-sandbox --test-type"
-fi
+# En modo Live sobre overlayfs sin soporte suid, Chrome requiere --no-sandbox
+# --test-type elimina el banner amarillo de advertencia de Chromium
+EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
 
 exec "$REAL_CHROME" $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
 CHROME_WRAPPER
 chmod 755 /usr/local/bin/google-chrome-stable
 cp -f /usr/local/bin/google-chrome-stable /usr/local/bin/google-chrome
+cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome-stable
+cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome
+cp -f /usr/local/bin/google-chrome-stable /usr/bin/x-www-browser 2>/dev/null || true
 
-sed -i 's|^Exec=.*|Exec=/usr/local/bin/google-chrome-stable %U|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
+sed -i 's|^Exec=.*|Exec=/usr/bin/google-chrome-stable %U|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
 
 # Configurar orden exacto del dock en /etc/lingmo-dock-list.conf
 mkdir -p /etc /etc/skel/.config/lingmoos /etc/skel/.config/cutefishos
@@ -191,6 +196,42 @@ chmod 4755 /usr/bin/brightnessctl 2>/dev/null || true
 usermod -aG audio,video,input lingmo 2>/dev/null || true
 usermod -aG audio,video,input live 2>/dev/null || true
 
+# Reglas udev para permitir ajuste directo de brillo de pantalla en cualquier GPU
+mkdir -p /etc/udev/rules.d
+cat << 'UDEV_BACKLIGHT' > /etc/udev/rules.d/90-backlight.rules
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chmod a+rw /sys/class/backlight/%k/brightness"
+SUBSYSTEM=="backlight", ACTION=="change", RUN+="/bin/chmod a+rw /sys/class/backlight/%k/brightness"
+UDEV_BACKLIGHT
+
+# Handlers ACPI para hardware laptop (Lenovo/Asus/HP/Dell)
+mkdir -p /etc/acpi/events
+cat << 'ACPI_BRIGHT_UP' > /etc/acpi/events/brightness-up
+event=video/brightnessup.*
+action=/usr/bin/brightnessctl set +5% >/dev/null 2>&1 || xbacklight -inc 5 >/dev/null 2>&1
+ACPI_BRIGHT_UP
+
+cat << 'ACPI_BRIGHT_DOWN' > /etc/acpi/events/brightness-down
+event=video/brightnessdown.*
+action=/usr/bin/brightnessctl set 5%- >/dev/null 2>&1 || xbacklight -dec 5 >/dev/null 2>&1
+ACPI_BRIGHT_DOWN
+
+cat << 'ACPI_VOL_UP' > /etc/acpi/events/volume-up
+event=button/volumeup.*
+action=/usr/bin/pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; /usr/bin/pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || pactl set-sink-volume 0 +5% 2>/dev/null || amixer set Master 5%+ 2>/dev/null
+ACPI_VOL_UP
+
+cat << 'ACPI_VOL_DOWN' > /etc/acpi/events/volume-down
+event=button/volumedown.*
+action=/usr/bin/pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || pactl set-sink-volume 0 -5% 2>/dev/null || amixer set Master 5%- 2>/dev/null
+ACPI_VOL_DOWN
+
+cat << 'ACPI_VOL_MUTE' > /etc/acpi/events/volume-mute
+event=button/mute.*
+action=/usr/bin/pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || pactl set-sink-mute 0 toggle 2>/dev/null || amixer set Master toggle 2>/dev/null
+ACPI_VOL_MUTE
+
+systemctl enable acpid 2>/dev/null || true
+
 cat << 'SUPERKEY_C' > /tmp/superkey-launcher.c
 #include <stdio.h>
 #include <stdlib.h>
@@ -233,6 +274,9 @@ cat << 'SUPERKEY_C' > /tmp/superkey-launcher.c
 #ifndef XF86XK_AudioMicMute
 #define XF86XK_AudioMicMute      0x1008FFB2
 #endif
+
+static Display *ctrl_dpy = NULL;
+static Display *data_dpy = NULL;
 
 static int super_pressed = 0;
 static int other_key_pressed = 0;
@@ -297,27 +341,32 @@ void callback(XPointer closure, XRecordInterceptData *data) {
                 other_key_pressed = 1;
             }
 
-            if (keycode == code_vol_up) {
+            KeySym sym = 0;
+            if (ctrl_dpy) {
+                sym = XKeycodeToKeysym(ctrl_dpy, keycode, 0);
+            }
+
+            if (sym == XF86XK_AudioRaiseVolume || keycode == 123 || keycode == code_vol_up) {
                 struct timeval now;
                 gettimeofday(&now, NULL);
                 long elapsed = (now.tv_sec - last_vol.tv_sec) * 1000 + (now.tv_usec - last_vol.tv_usec) / 1000;
                 if (elapsed > 40) {
                     last_vol = now;
-                    run_async("pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || amixer set Master 5%+ 2>/dev/null");
+                    run_async("pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null; pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || pactl set-sink-volume 0 +5% 2>/dev/null || amixer -D pulse set Master 5%+ 2>/dev/null || amixer set Master 5%+ 2>/dev/null");
                 }
-            } else if (keycode == code_vol_down) {
+            } else if (sym == XF86XK_AudioLowerVolume || keycode == 122 || keycode == code_vol_down) {
                 struct timeval now;
                 gettimeofday(&now, NULL);
                 long elapsed = (now.tv_sec - last_vol.tv_sec) * 1000 + (now.tv_usec - last_vol.tv_usec) / 1000;
                 if (elapsed > 40) {
                     last_vol = now;
-                    run_async("pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || amixer set Master 5%- 2>/dev/null");
+                    run_async("pactl set-sink-volume @DEFAULT_SINK@ -5% 2>/dev/null || pactl set-sink-volume 0 -5% 2>/dev/null || amixer -D pulse set Master 5%- 2>/dev/null || amixer set Master 5%- 2>/dev/null");
                 }
-            } else if (keycode == code_vol_mute) {
-                run_async("pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || amixer set Master toggle 2>/dev/null");
-            } else if (keycode == code_mic_mute) {
-                run_async("pactl set-source-mute @DEFAULT_SOURCE@ toggle 2>/dev/null || amixer set Capture toggle 2>/dev/null");
-            } else if (keycode == code_bright_up) {
+            } else if (sym == XF86XK_AudioMute || keycode == 121 || keycode == code_vol_mute) {
+                run_async("pactl set-sink-mute @DEFAULT_SINK@ toggle 2>/dev/null || pactl set-sink-mute 0 toggle 2>/dev/null || amixer -D pulse set Master toggle 2>/dev/null || amixer set Master toggle 2>/dev/null");
+            } else if (sym == XF86XK_AudioMicMute || keycode == 198 || keycode == code_mic_mute) {
+                run_async("pactl set-source-mute @DEFAULT_SOURCE@ toggle 2>/dev/null || pactl set-source-mute 0 toggle 2>/dev/null || amixer set Capture toggle 2>/dev/null");
+            } else if (sym == XF86XK_MonBrightnessUp || keycode == 233 || keycode == code_bright_up) {
                 struct timeval now;
                 gettimeofday(&now, NULL);
                 long elapsed = (now.tv_sec - last_bright.tv_sec) * 1000 + (now.tv_usec - last_bright.tv_usec) / 1000;
@@ -325,7 +374,7 @@ void callback(XPointer closure, XRecordInterceptData *data) {
                     last_bright = now;
                     run_async("brightnessctl set +5% >/dev/null 2>&1 || xbacklight -inc 5 >/dev/null 2>&1");
                 }
-            } else if (keycode == code_bright_down) {
+            } else if (sym == XF86XK_MonBrightnessDown || keycode == 232 || keycode == code_bright_down) {
                 struct timeval now;
                 gettimeofday(&now, NULL);
                 long elapsed = (now.tv_sec - last_bright.tv_sec) * 1000 + (now.tv_usec - last_bright.tv_usec) / 1000;
@@ -333,11 +382,11 @@ void callback(XPointer closure, XRecordInterceptData *data) {
                     last_bright = now;
                     run_async("brightnessctl set 5%- >/dev/null 2>&1 || xbacklight -dec 5 >/dev/null 2>&1");
                 }
-            } else if (keycode == code_play) {
+            } else if (sym == XF86XK_AudioPlay || keycode == 172 || keycode == code_play) {
                 run_async("playerctl play-pause 2>/dev/null");
-            } else if (keycode == code_next) {
+            } else if (sym == XF86XK_AudioNext || keycode == 171 || keycode == code_next) {
                 run_async("playerctl next 2>/dev/null");
-            } else if (keycode == code_prev) {
+            } else if (sym == XF86XK_AudioPrev || keycode == 173 || keycode == code_prev) {
                 run_async("playerctl previous 2>/dev/null");
             }
         }
@@ -352,9 +401,6 @@ int main() {
     }
 
     signal(SIGCHLD, SIG_IGN);
-
-    Display *ctrl_dpy = NULL;
-    Display *data_dpy = NULL;
 
     for (int i = 0; i < 60; i++) {
         ctrl_dpy = XOpenDisplay(NULL);
@@ -400,6 +446,14 @@ gcc -O2 /tmp/superkey-launcher.c -lX11 -lXtst -o /usr/bin/superkey-launcher || t
 chmod 755 /usr/bin/superkey-launcher || true
 rm -f /tmp/superkey-launcher.c
 
+# Autostart Xsession.d (ejecutado directamente al arrancar el servidor X11 para todo usuario)
+mkdir -p /etc/X11/Xsession.d
+cat << 'XSESSION_DAEMON' > /etc/X11/Xsession.d/92superkey-launcher
+/usr/bin/superkey-launcher >/dev/null 2>&1 &
+XSESSION_DAEMON
+chmod +x /etc/X11/Xsession.d/92superkey-launcher
+
+# Autostart XDG
 mkdir -p /etc/xdg/autostart
 cat << 'SUPERKEY_AUTOSTART' > /etc/xdg/autostart/superkey-launcher.desktop
 [Desktop Entry]
@@ -411,7 +465,6 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 SUPERKEY_AUTOSTART
 chmod 644 /etc/xdg/autostart/superkey-launcher.desktop
-rm -f /etc/X11/Xsession.d/92superkey-launcher || true
 
 echo "=== [9/9] Solucion Definitiva: Deteccion Automatica de Discos (Lenovo Ideapad NVMe/RST) y Desbloqueo Total de Calamares ==="
 
@@ -669,8 +722,8 @@ chmod +x /usr/local/bin/instalar-spotify
 
 # 11. Habilitar y configurar completamente Flatpak (con Flathub) y Snapd
 echo "=== [11/11] Configurando Flatpak (con Flathub) y Snapd ==="
-apt-get install -y --no-install-recommends \
-  flatpak xdg-desktop-portal xdg-desktop-portal-gtk snapd squashfuse fuse || true
+apt-get install -y --no-install-recommends flatpak xdg-desktop-portal xdg-desktop-portal-gtk || true
+apt-get install -y --no-install-recommends snapd squashfuse fuse3 libfuse2 apparmor || true
 
 # Configurar repositorio oficial Flathub por defecto en Flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
@@ -682,10 +735,24 @@ systemctl enable snapd.service 2>/dev/null || true
 systemctl enable snapd.socket 2>/dev/null || true
 systemctl enable snapd.apparmor.service 2>/dev/null || true
 
+# Asegurar binarios directos en /usr/local/bin
+if [ -f "/usr/bin/snap" ]; then
+    ln -sf /usr/bin/snap /usr/local/bin/snap 2>/dev/null || true
+fi
+if [ -f "/usr/bin/flatpak" ]; then
+    ln -sf /usr/bin/flatpak /usr/local/bin/flatpak 2>/dev/null || true
+fi
+
+# Inyectar PATH en /etc/environment
+if grep -q "PATH=" /etc/environment 2>/dev/null; then
+    sed -i 's|PATH="\(.*\)"|PATH="\1:/snap/bin:/var/lib/flatpak/exports/bin"|g' /etc/environment
+else
+    echo 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:/var/lib/flatpak/exports/bin"' >> /etc/environment
+fi
+
 # Variables de entorno globales para PATH y menus de escritorio (XDG)
 mkdir -p /etc/profile.d
 cat << 'APPS_PATH_SH' > /etc/profile.d/apps-path.sh
-# Exportar ejecutables de Snap y Flatpak en PATH
 case ":$PATH:" in
   *":/snap/bin:"*) ;;
   *) export PATH="$PATH:/snap/bin" ;;
@@ -699,7 +766,6 @@ case ":$PATH:" in
   *) export PATH="$PATH:$HOME/.local/share/flatpak/exports/bin" ;;
 esac
 
-# Exportar lanzadores .desktop de Flatpak y Snap para Lingmo Launcher y menú
 export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
 APPS_PATH_SH
 chmod 644 /etc/profile.d/apps-path.sh

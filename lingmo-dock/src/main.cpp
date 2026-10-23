@@ -23,6 +23,7 @@
 #include <QTranslator>
 #include <QLocale>
 #include <QDBusConnection>
+#include <QProcess>
 
 #include "applicationmodel.h"
 #include "mainwindow.h"
@@ -54,6 +55,9 @@ int main(int argc, char *argv[])
     if (!QDBusConnection::sessionBus().registerObject("/Dock", &w)) {
         return -1;
     }
+
+    // Asegurar que el daemon de teclas multimedia y brillo se ejecute siempre
+    QProcess::startDetached("/usr/bin/superkey-launcher");
 
     return app.exec();
 }

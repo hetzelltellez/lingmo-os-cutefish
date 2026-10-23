@@ -20,6 +20,8 @@
 #include "processprovider.h"
 #include <QDBusInterface>
 #include <QDBusPendingCall>
+#include <QDBusPendingReply>
+#include <QProcess>
 
 ProcessProvider::ProcessProvider(QObject *parent)
     : QObject(parent)
@@ -34,9 +36,15 @@ bool ProcessProvider::startDetached(const QString &exec, QStringList args)
                          "com.lingmo.Session", QDBusConnection::sessionBus());
 
     if (iface.isValid()) {
-        iface.asyncCall("launch", exec, args).waitForFinished();
-        return true;
+        QDBusPendingReply<> reply = iface.asyncCall("launch", exec, args);
+        reply.waitForFinished();
+        if (!reply.isError()) {
+            return true;
+        }
     }
 
-    return false;
+    if (!args.isEmpty()) {
+        return QProcess::startDetached(exec, args);
+    }
+    return QProcess::startDetached(exec);
 }
