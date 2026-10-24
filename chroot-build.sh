@@ -60,7 +60,7 @@ if [ -f "/tmp/google-chrome-stable_current_amd64.deb" ] && [ -s "/tmp/google-chr
 fi
 
 # Blindar ejecucion de Google Chrome en modo Live
-chmod 4755 /opt/google/chrome/chrome-sandbox 2>/dev/null || true
+chmod 755 /opt/google/chrome/chrome-sandbox 2>/dev/null || true
 chmod 755 /opt/google/chrome/google-chrome /opt/google/chrome/chrome 2>/dev/null || true
 mkdir -p /etc/sysctl.d
 echo "kernel.unprivileged_userns_clone=1" > /etc/sysctl.d/00-local-userns.conf
@@ -76,19 +76,10 @@ if [ -f "/opt/google/chrome/google-chrome" ]; then
     sed -i 's|exec -a "\$0" "\$HERE/chrome"|exec -a "\$0" "\$HERE/chrome" --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /opt/google/chrome/google-chrome 2>/dev/null || true
 fi
 
-# 3. Crear wrapper indestructible en /usr/local/bin y /usr/bin
-cat << 'CHROME_WRAPPER' > /usr/local/bin/google-chrome-stable
+# 3. Wrapper definitivo para /usr/bin/google-chrome-stable
+cat << 'CHROME_WRAPPER' > /usr/bin/google-chrome-stable
 #!/bin/bash
 export CHROME_EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
-
-REAL_CHROME=""
-if [ -x "/opt/google/chrome/google-chrome" ]; then
-    REAL_CHROME="/opt/google/chrome/google-chrome"
-elif [ -x "/usr/bin/google-chrome-stable" ] && [ "/usr/bin/google-chrome-stable" != "$0" ]; then
-    REAL_CHROME="/usr/bin/google-chrome-stable"
-elif [ -x "/opt/google/chrome/chrome" ]; then
-    REAL_CHROME="/opt/google/chrome/chrome"
-fi
 
 CLEAN_ARGS=()
 for a in "$@"; do
@@ -99,17 +90,21 @@ done
 
 EXTRA_FLAGS="--no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run"
 
-exec "$REAL_CHROME" $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
+if [ -x "/opt/google/chrome/google-chrome" ]; then
+    exec /opt/google/chrome/google-chrome $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
+elif [ -x "/opt/google/chrome/chrome" ]; then
+    exec /opt/google/chrome/chrome $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
+else
+    exec /usr/bin/chromium $EXTRA_FLAGS "${CLEAN_ARGS[@]}"
+fi
 CHROME_WRAPPER
-chmod 755 /usr/local/bin/google-chrome-stable
-cp -f /usr/local/bin/google-chrome-stable /usr/local/bin/google-chrome
-cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome-stable
-cp -f /usr/local/bin/google-chrome-stable /usr/bin/google-chrome
-cp -f /usr/local/bin/google-chrome-stable /usr/bin/x-www-browser 2>/dev/null || true
+chmod 755 /usr/bin/google-chrome-stable
+ln -sf /usr/bin/google-chrome-stable /usr/bin/google-chrome
+ln -sf /usr/bin/google-chrome-stable /usr/bin/x-www-browser 2>/dev/null || true
+rm -f /usr/local/bin/google-chrome /usr/local/bin/google-chrome-stable
 
 # 4. Actualizar google-chrome.desktop
-sed -i 's|^Exec=/usr/bin/google-chrome-stable.*|Exec=/usr/bin/google-chrome-stable %U --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
-sed -i 's|^Exec=google-chrome.*|Exec=/usr/bin/google-chrome-stable %U --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
+sed -i 's|^Exec=.*|Exec=/usr/bin/google-chrome-stable --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu-sandbox --password-store=basic --no-default-browser-check --no-first-run %U|g' /usr/share/applications/google-chrome.desktop 2>/dev/null || true
 
 # Configurar orden exacto del dock en /etc/lingmo-dock-list.conf
 mkdir -p /etc /etc/skel/.config/lingmoos /etc/skel/.config/cutefishos
@@ -156,6 +151,14 @@ cat << 'KWIN_PLUGINS' >> /etc/xdg/kwinrc
 [Plugins]
 magiclampEnabled=true
 lingmo_squashEnabled=false
+
+[Compositing]
+Enabled=true
+Backend=OpenGL
+GLCore=true
+AnimationSpeed=3
+MaxFPS=60
+RefreshRate=60
 KWIN_PLUGINS
 
 mkdir -p /etc/skel/.config
@@ -163,6 +166,14 @@ cat << 'KWIN_USER' >> /etc/skel/.config/kwinrc
 [Plugins]
 magiclampEnabled=true
 lingmo_squashEnabled=false
+
+[Compositing]
+Enabled=true
+Backend=OpenGL
+GLCore=true
+AnimationSpeed=3
+MaxFPS=60
+RefreshRate=60
 KWIN_USER
 
 cat << 'KCM_CONF' > /etc/skel/.config/kcminputrc
@@ -870,9 +881,24 @@ chmod +x /usr/local/bin/instalar-spotify
 echo "=== [11/11] Configurando Flatpak (con Flathub), Snapd y Auto-Sync Daemon ==="
 apt-get install -y --no-install-recommends flatpak xdg-desktop-portal xdg-desktop-portal-gtk || true
 apt-get install -y --no-install-recommends snapd squashfuse fuse3 libfuse2 apparmor inotify-tools || true
+apt-get install -y --no-install-recommends xserver-xorg-video-all mesa-va-drivers mesa-vulkan-drivers intel-media-va-driver libgl1-mesa-dri libglx-mesa0 || true
 
 # Configurar repositorio oficial Flathub por defecto en Flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+
+# Configurar OSTree para no limitar el espacio en disco en modo Live (min-free-space-size=0)
+mkdir -p /var/lib/flatpak/repo /etc/skel/.local/share/flatpak/repo
+cat << 'OSTREE_CONF' > /var/lib/flatpak/repo/config
+[core]
+repo_version=1
+mode=bare-user-only
+min-free-space-size=0
+min-free-space-percent=0
+OSTREE_CONF
+cp -f /var/lib/flatpak/repo/config /etc/skel/.local/share/flatpak/repo/config 2>/dev/null || true
+
+ostree --repo=/var/lib/flatpak/repo config set core.min-free-space-size 0 2>/dev/null || true
+ostree --repo=/var/lib/flatpak/repo config set core.min-free-space-percent 0 2>/dev/null || true
 
 # Configurar Snapd y enlaces de compatibilidad
 mkdir -p /snap /var/lib/snapd/snap /var/lib/snapd/desktop /var/lib/snapd/desktop/applications /var/lib/flatpak/exports/share/applications
@@ -913,6 +939,12 @@ case ":$PATH:" in
 esac
 
 export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
+
+# Desactivar bloqueo de espacio de Flatpak en cada inicio
+if [ -d "/var/lib/flatpak/repo" ]; then
+    ostree --repo=/var/lib/flatpak/repo config set core.min-free-space-size 0 2>/dev/null || true
+    ostree --repo=/var/lib/flatpak/repo config set core.min-free-space-percent 0 2>/dev/null || true
+fi
 APPS_PATH_SH
 chmod 644 /etc/profile.d/apps-path.sh
 
@@ -934,79 +966,68 @@ command_not_found_handle() {
 }
 CMD_NOT_FOUND
 
-# Daemon automatico de sincronizacion lingmo-app-sync
+# Daemon automatico de sincronizacion lingmo-app-sync (Ultra-ligero, 0% CPU en reposo)
 cat << 'APP_SYNC_SH' > /usr/local/bin/lingmo-app-sync
 #!/bin/bash
-# Lingmo OS Auto-Sync para aplicaciones Snap, Flatpak y atajos de escritorio
+# Lingmo OS Auto-Sync para aplicaciones Snap y Flatpak (Ultra-ligero, 0% CPU)
+
 sync_apps() {
     mkdir -p /usr/share/applications /usr/share/icons/hicolor /usr/share/pixmaps
 
     # 1. Sincronizar aplicaciones Snap
     if [ -d "/var/lib/snapd/desktop/applications" ]; then
         for f in /var/lib/snapd/desktop/applications/*.desktop; do
-            if [ -f "$f" ]; then
-                base=$(basename "$f")
-                target="/usr/share/applications/$base"
-                if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
-                    ln -sf "$f" "$target" 2>/dev/null || cp -f "$f" "$target" 2>/dev/null
-                fi
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            target="/usr/share/applications/$base"
+            if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
+                ln -sf "$f" "$target" 2>/dev/null || true
             fi
         done
     fi
 
-    # 2. Sincronizar aplicaciones Flatpak del sistema y de usuarios
+    # 2. Sincronizar aplicaciones Flatpak
     FLATPAK_DIRS=(
         "/var/lib/flatpak/exports/share/applications"
     )
-    for u_home in /home/* /root; do
+    for u_home in /home/*; do
         if [ -d "$u_home/.local/share/flatpak/exports/share/applications" ]; then
             FLATPAK_DIRS+=("$u_home/.local/share/flatpak/exports/share/applications")
         fi
     done
 
     for fdir in "${FLATPAK_DIRS[@]}"; do
-        if [ -d "$fdir" ]; then
-            for f in "$fdir"/*.desktop; do
-                if [ -f "$f" ]; then
-                    base=$(basename "$f")
-                    target="/usr/share/applications/$base"
-                    if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
-                        ln -sf "$f" "$target" 2>/dev/null || cp -f "$f" "$target" 2>/dev/null
-                    fi
+        [ -d "$fdir" ] || continue
+        for f in "$fdir"/*.desktop; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            target="/usr/share/applications/$base"
+            if [ ! -e "$target" ] || [ "$f" -nt "$target" ]; then
+                ln -sf "$f" "$target" 2>/dev/null || true
+            fi
 
-                    # Crear comandos ejecutables en /usr/local/bin (ej. 'firefox', 'gimp')
-                    app_id=$(basename "$f" .desktop)
-                    short_name=$(echo "$app_id" | awk -F. '{print $NF}' | tr '[:upper:]' '[:lower:]')
-                    
-                    aliases=("$app_id")
-                    [ -n "$short_name" ] && [ "$short_name" != "$app_id" ] && aliases+=("$short_name")
-                    
-                    case "$app_id" in
-                        *firefox*|*Firefox*) aliases+=("firefox") ;;
-                        *gimp*|*GIMP*) aliases+=("gimp") ;;
-                        *vlc*|*VLC*) aliases+=("vlc") ;;
-                        *spotify*|*Spotify*) aliases+=("spotify") ;;
-                        *telegram*|*Telegram*) aliases+=("telegram" "telegram-desktop") ;;
-                        *chrome*|*Chrome*) aliases+=("google-chrome") ;;
-                    esac
-
-                    for cmd in "${aliases[@]}"; do
-                        wrap="/usr/local/bin/$cmd"
-                        if [ ! -e "$wrap" ] || [ -L "$wrap" ]; then
-                            cat << EOF_CLI > "$wrap"
+            # Alias de comando en /usr/local/bin unicamente para la aplicacion Flatpak real
+            app_id=$(basename "$f" .desktop)
+            short_name=$(echo "$app_id" | awk -F. '{print $NF}' | tr '[:upper:]' '[:lower:]')
+            
+            for cmd in "$app_id" "$short_name"; do
+                [ -n "$cmd" ] || continue
+                # Blindaje total de binarios del sistema: NUNCA sobreescribir navegadores ni utilidades nativas
+                case "$cmd" in
+                    chrome*|google*|chromium*|firefox-esr|sh|bash|cat|ls|rm|cp|mv|sudo|su|login|system*|kwin*|lingmo*|cutefish*)
+                        continue
+                        ;;
+                esac
+                wrap="/usr/local/bin/$cmd"
+                if [ ! -f "$wrap" ] || [ -L "$wrap" ]; then
+                    cat << EOF_CLI > "$wrap"
 #!/bin/sh
-if which flatpak >/dev/null 2>&1 && flatpak info "$app_id" >/dev/null 2>&1; then
-    exec flatpak run "$app_id" "\$@"
-elif [ -x "/var/lib/flatpak/exports/bin/$app_id" ]; then
-    exec "/var/lib/flatpak/exports/bin/$app_id" "\$@"
-fi
+exec /usr/bin/flatpak run "$app_id" "\$@"
 EOF_CLI
-                            chmod 755 "$wrap" 2>/dev/null || true
-                        fi
-                    done
+                    chmod 755 "$wrap" 2>/dev/null || true
                 fi
             done
-        fi
+        done
     done
 
     # 3. Sincronizar iconos
@@ -1019,20 +1040,27 @@ EOF_CLI
     fi
 }
 
+# Ejecutar una pasada limpia al arrancar
 sync_apps
 
+# Monitorear UNICAMENTE las carpetas de exportacion de Flatpak y Snap (NUNCA /home/*/.local/share)
+WATCH_DIRS=()
+[ -d "/var/lib/flatpak/exports/share/applications" ] && WATCH_DIRS+=("/var/lib/flatpak/exports/share/applications")
+[ -d "/var/lib/snapd/desktop/applications" ] && WATCH_DIRS+=("/var/lib/snapd/desktop/applications")
+
 while true; do
-    if which inotifywait >/dev/null 2>&1; then
-        inotifywait -r -q -t 5 -e create,delete,modify,attrib,moved_to /var/lib/flatpak/exports/share /var/lib/snapd/desktop /home/*/.local/share 2>/dev/null
+    if which inotifywait >/dev/null 2>&1 && [ ${#WATCH_DIRS[@]} -gt 0 ]; then
+        inotifywait -q -t 20 -e create,delete,moved_to,moved_from "${WATCH_DIRS[@]}" 2>/dev/null
     else
-        sleep 4
+        sleep 10
     fi
+    sleep 3
     sync_apps
 done
 APP_SYNC_SH
 chmod 755 /usr/local/bin/lingmo-app-sync
 
-# Servicio Systemd para lingmo-app-sync
+# Servicio Systemd para lingmo-app-sync (instancia unica controlada, baja prioridad CPU)
 mkdir -p /etc/systemd/system
 cat << 'APP_SYNC_SERVICE' > /etc/systemd/system/lingmo-app-sync.service
 [Unit]
@@ -1044,18 +1072,31 @@ Wants=snapd.service
 Type=simple
 ExecStart=/usr/local/bin/lingmo-app-sync
 Restart=always
-RestartSec=3
+RestartSec=5
+Nice=19
+CPUSchedulingPolicy=idle
 
 [Install]
 WantedBy=multi-user.target
 APP_SYNC_SERVICE
 systemctl enable lingmo-app-sync.service 2>/dev/null || true
 
-# Autostart Xsession para lingmo-app-sync
-cat << 'APP_SYNC_XSESSION' > /etc/X11/Xsession.d/93lingmo-app-sync
-/usr/local/bin/lingmo-app-sync >/dev/null 2>&1 &
-APP_SYNC_XSESSION
-chmod +x /etc/X11/Xsession.d/93lingmo-app-sync
+# Eliminar cualquier script duplicado en Xsession.d
+rm -f /etc/X11/Xsession.d/93lingmo-app-sync
+
+# Remontar live overlay para disponer del 90% de RAM en modo Live y expandir espacio
+mkdir -p /etc/rc.local.d
+cat << 'RC_LOCAL' > /etc/rc.local
+#!/bin/sh
+mount -o remount,size=90% /run/live/overlay 2>/dev/null || true
+mount -o remount,size=90% / 2>/dev/null || true
+chmod -R a+rw /sys/class/backlight/ 2>/dev/null || true
+exit 0
+RC_LOCAL
+chmod +x /etc/rc.local
+
+# Limpiar cualquier wrapper de Google Chrome residual en /usr/local/bin
+rm -f /usr/local/bin/google-chrome /usr/local/bin/google-chrome-stable
 
 # Asegurar permisos correctos de usuario
 chown -R 1000:1000 /home/* /etc/skel 2>/dev/null || true

@@ -92,8 +92,8 @@ jobs:
             done
           fi
 
-          # Agregar parametros de arranque para forzar deteccion de NVMe, VMD y evitar fallos IOMMU/APST en laptops Lenovo
-          find iso_root -type f \( -name "*.cfg" -o -name "*.conf" \) -exec sudo sed -i 's/boot=live/boot=live nvme_core.default_ps_max_latency_us=0 pcie_aspm=off iommu=pt/g' {} + || true
+          # Agregar parametros de arranque: 10GB de espacio overlay para Flatpak/Snap, deteccion de NVMe, VMD y evitar fallos en Lenovo
+          find iso_root -type f \( -name "*.cfg" -o -name "*.conf" \) -exec sudo sed -i 's/boot=live/boot=live cow_spacesize=10G nvme_core.default_ps_max_latency_us=0 pcie_aspm=off iommu=pt/g' {} + || true
 
           # Desmontar chroot
           sudo umount -l squashfs_root/sys || true
